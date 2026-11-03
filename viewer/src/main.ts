@@ -5,6 +5,7 @@ import {
   loadCourse,
   loadHeights,
   loadIndex,
+  lonLatToLocal,
   type Course,
   type CourseIndexEntry,
   type Hole,
@@ -12,7 +13,22 @@ import {
   type XY,
 } from "./course";
 import { buildHoleScene, type HoleScene } from "./hole";
-import { defaultSpread, loadBag, planShot, saveBag, suggestClub, SURFACE_LABELS, type Bag, type ShotPlan, type Surface } from "./shot";
+import {
+  clubFor,
+  defaultSpread,
+  dropBetween,
+  loadBag,
+  planShot,
+  playsLikeYd,
+  saveBag,
+  suggestClub,
+  SURFACE_LABELS,
+  yardsBetween,
+  type Bag,
+  type ShotPlan,
+  type Surface,
+} from "./shot";
+import { currentRound, deleteRound, finishRound, pastRounds, setScore, startRound, toPar, totals, type Round } from "./round";
 import type { HeightGrid } from "./course";
 import "./style.css";
 
@@ -72,9 +88,14 @@ interface State {
   book: boolean;
   bag: Bag;
   club: number;
-  /** Where the next shot is hit from; null means the tee. */
-  ball: XY | null;
+  /** Where each played shot finished on this hole; the ball lies at the last one, or on the tee. */
+  trail: XY[];
+  /** Where the player is aiming, once they tap or drag; null aims down the line of play. */
+  target: XY | null;
   plan: ShotPlan | null;
+  /** Live GPS position in the course frame, once it's on the course. */
+  gps: { p: XY; accM: number } | null;
+  gpsOn: boolean;
 }
 const BOOK_KEY = "golffly.book";
 const state: State = {
@@ -90,8 +111,11 @@ const state: State = {
   book: localStorage.getItem(BOOK_KEY) === "1",
   bag: loadBag(),
   club: 0,
-  ball: null,
+  trail: [],
+  target: null,
   plan: null,
+  gps: null,
+  gpsOn: false,
 };
 let loadToken = 0;
 
@@ -126,31 +150,61 @@ function renderChrome() {
   $("tee-chip").textContent = course.tee_sets.find((s) => s.key === state.teeSet)?.label ?? "Tee";
   document.body.classList.toggle("book", state.book);
   $("clubs").hidden = !state.book;
+  renderScoreBug();
+  const card = $("card");
+  const live = gpsLive();
+  card.classList.toggle("stale", live && state.gps!.accM > 9);
+  const ball = ballPoint()!;
+  const where = live
+    ? `<div class="from"><span class="gps-dot"></span>From you · ±${Math.round(state.gps!.accM / 0.9144)} yd</div>`
+    : state.trail.length
+      ? `<div class="from">Shot ${state.trail.length + 1} · from where the last one finished</div>`
+      : "";
+  const canHit = !live && (state.plan || state.target);
+  const actions = [
+    canHit ? `<button data-act="hit">Hit</button>` : "",
+    !live && state.trail.length ? `<button data-act="undo">Undo</button>` : "",
+    state.target ? `<button data-act="clear" aria-label="Clear target">✕</button>` : "",
+  ].join("");
+  const actionRow = actions ? `<div class="actions">${actions}</div>` : "";
+  const leavesText = (yd: number) => (yd > 12 ? `${Math.round(yd)} to centre` : "Pin high");
+  const playsText = (dist: number, plays: number) =>
+    Math.abs(plays - dist) >= 2 ? `<span class="plays">Plays ${Math.round(plays)}</span> · ` : "";
+
   if (state.book && state.plan) {
     const p = state.plan;
-    const drop =
-      Math.abs(p.dropFt) >= 6
-        ? `<div class="from">Flies ${Math.round(p.effectiveYd)} with the ${Math.round(Math.abs(p.dropFt))} ft ${p.dropFt > 0 ? "drop" : "rise"}</div>`
-        : "";
     const mix = p.mix
       .slice(0, 4)
       .map((m) => `<span style="--dot:${SURFACE_DOT[m.surface]}">${SURFACE_LABELS[m.surface]} ${m.pct}%</span>`)
       .join("");
-    const leaves = p.leavesYd > 12 ? `${Math.round(p.leavesYd)} to centre` : "Pin high";
-    $("card").innerHTML = `
-      <div class="club-name">${p.club.name}</div>
-      <div class="big">${Math.round(p.carryYd)}<small> carry</small></div>
-      <div class="leaves">${leaves}</div>
+    card.innerHTML = `
+      <div class="club-name">${p.club.name} · ${Math.round(p.carryYd)} carry</div>
+      <div class="big">${Math.round(p.distYd)}<small> ${state.target ? "to target" : "yd"}</small></div>
+      <div class="leaves">${playsText(p.distYd, p.playsYd)}${leavesText(p.leavesYd)}</div>
       <div class="mix">${mix}</div>
-      ${drop}
-      ${state.ball ? `<div class="from">From your spot · tap the tee view to reset</div>` : ""}`;
+      ${where}${actionRow}`;
+  } else if (state.target && state.grid) {
+    const dist = yardsBetween(ball, state.target);
+    const plays = playsLikeYd(state.grid, ball, state.target);
+    card.innerHTML = `
+      <div class="eyebrow">Target</div>
+      <div class="big">${Math.round(dist)}</div>
+      <div class="leaves">${playsText(dist, plays)}${leavesText(yardsBetween(state.target, hole.green.middle))}</div>
+      ${where}${actionRow}`;
   } else {
-    const plays = Math.abs(tee.elev_change_ft) >= 3 ? `<div class="plays">Plays ${playsLike(tee)}</div>` : "";
-    $("card").innerHTML = `
+    const fromTee = !live && !state.trail.length;
+    const g = hole.green;
+    const [f, m, b] = fromTee
+      ? [tee.front_yd, tee.middle_yd, tee.back_yd]
+      : [yardsBetween(ball, g.front), yardsBetween(ball, g.middle), yardsBetween(ball, g.back)];
+    const plays = fromTee ? playsLike(tee) : state.grid ? Math.round(playsLikeYd(state.grid, ball, g.middle)) : Math.round(m);
+    const playsRow = Math.abs(plays - m) >= 1.5 ? `<div class="plays">Plays ${plays}</div>` : "";
+    card.innerHTML = `
       <div class="eyebrow">Centre</div>
-      <div class="big">${Math.round(tee.middle_yd)}</div>
-      <div class="fb">F ${Math.round(tee.front_yd)} · B ${Math.round(tee.back_yd)}</div>
-      ${plays}`;
+      <div class="big">${Math.round(m)}</div>
+      <div class="fb">F ${Math.round(f)} · B ${Math.round(b)}</div>
+      ${playsRow}
+      ${where}${actionRow}`;
   }
   document.querySelectorAll<HTMLButtonElement>("[data-cam]").forEach((b) => b.classList.toggle("active", b.dataset.cam === state.mode));
 }
@@ -191,6 +245,7 @@ function selectClub(i: number, scroll = true) {
   state.club = i;
   clubTrack.querySelectorAll<HTMLElement>("[data-club]").forEach((b) => b.classList.toggle("active", Number(b.dataset.club) === i));
   if (scroll) centerActiveClub("smooth");
+  retargetForClub();
   updateShot();
 }
 
@@ -217,39 +272,91 @@ clubTrack.addEventListener("click", (e) => {
   else selectClub(Number(b.dataset.club));
 });
 
+const gpsLive = () => state.gpsOn && !!state.gps;
+
+/** Where the next shot is played from: you on GPS, else where the last shot finished, else the tee. */
 function ballPoint(): XY | null {
   const { hole } = state;
-  return hole ? (state.ball ?? teeFor(hole).point) : null;
+  if (!hole) return null;
+  if (gpsLive()) return state.gps!.p;
+  return state.trail.at(-1) ?? teeFor(hole).point;
 }
 
-function updateShot() {
+const onTee = () => !gpsLive() && !state.trail.length;
+
+function updateShot(samples?: number) {
   const { course, hole, grid, scene: hs } = state;
   if (!course || !hole || !grid || !hs) return;
   const club = state.bag.clubs[state.club];
-  if (!state.book || !club?.enabled) {
-    state.plan = null;
-    hs.setShot(null);
-  } else {
-    state.plan = planShot(course, hole, teeFor(hole), grid, ballPoint()!, club, state.bag.miss);
-    hs.setShot(state.plan);
-  }
+  const ball = ballPoint()!;
+  state.plan = state.book && club?.enabled ? planShot(course, hole, teeFor(hole), grid, ball, club, state.bag.miss, state.target, samples) : null;
+  hs.setShot(state.plan);
+  const aim = state.plan?.aim ?? state.target;
+  hs.setAim(
+    aim ? { ball, target: aim, distYd: yardsBetween(ball, aim), leavesYd: yardsBetween(aim, hole.green.middle), flight: !!state.plan } : null,
+  );
+  hs.setTrail(gpsLive() || !state.trail.length ? [] : [teeFor(hole).point, ...state.trail]);
   renderChrome();
 }
 
 /** Pick the club for the current ball position and redraw. */
 function suggestAndUpdate() {
-  const { hole } = state;
+  const { hole, grid } = state;
   if (!hole) return;
   const ball = ballPoint()!;
-  let toGreen = Math.hypot(hole.green.middle[0] - ball[0], hole.green.middle[1] - ball[1]) / 0.9144;
-  if (state.grid) {
-    const dropFt = (state.grid.heightAt(ball[0], ball[1]) - state.grid.heightAt(...hole.green.middle)) / 0.3048;
-    if (Number.isFinite(dropFt)) toGreen -= dropFt / 3;
-  }
-  state.club = suggestClub(state.bag, toGreen, !state.ball, hole.par);
+  const toGreen = grid ? playsLikeYd(grid, ball, hole.green.middle) : yardsBetween(ball, hole.green.middle);
+  state.club = suggestClub(state.bag, toGreen, onTee(), hole.par);
   if (state.book) renderClubStrip();
   state.plan = null;
   updateShot();
+}
+
+/** Move the target, and in the yardage book pick the club that plays closest to it. */
+function aimAt(p: XY, samples?: number) {
+  const { grid } = state;
+  state.target = p;
+  if (state.book && grid) {
+    const i = clubFor(state.bag, playsLikeYd(grid, ballPoint()!, p), onTee());
+    if (i !== state.club) {
+      state.club = i;
+      clubTrack.querySelectorAll<HTMLElement>("[data-club]").forEach((b) => b.classList.toggle("active", Number(b.dataset.club) === i));
+      centerActiveClub("auto");
+    }
+  }
+  updateShot(samples);
+}
+
+/** Keep the aim's direction but move it to where the chosen club plays to. */
+function retargetForClub() {
+  const { grid, target } = state;
+  const club = state.bag.clubs[state.club];
+  if (!target || !grid || !club) return;
+  const ball = ballPoint()!;
+  const len = Math.hypot(target[0] - ball[0], target[1] - ball[1]) || 1;
+  const dir: XY = [(target[0] - ball[0]) / len, (target[1] - ball[1]) / len];
+  let carryM = club.carry * 0.9144;
+  let p: XY = target;
+  for (let i = 0; i < 3; i++) {
+    p = [ball[0] + dir[0] * carryM, ball[1] + dir[1] * carryM];
+    carryM = (club.carry + dropBetween(grid, ball, p) / 3) * 0.9144;
+  }
+  state.target = p;
+}
+
+/** Play the planned shot: the ball finishes at the target and the next shot starts there. */
+function hit() {
+  const to = state.plan?.aim ?? state.target;
+  if (!to || gpsLive()) return;
+  state.trail.push(to);
+  state.target = null;
+  suggestAndUpdate();
+}
+
+function undo() {
+  if (!state.trail.length) return;
+  state.trail.pop();
+  state.target = null;
+  suggestAndUpdate();
 }
 
 function setBook(on: boolean) {
@@ -259,12 +366,12 @@ function setBook(on: boolean) {
 }
 
 let toastTimer = 0;
-function toast(text: string) {
+function toast(text: string, ms = 900) {
   const el = $("toast");
   el.textContent = text;
   el.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => el.classList.remove("show"), 900);
+  toastTimer = window.setTimeout(() => el.classList.remove("show"), ms);
 }
 
 // --- cameras -------------------------------------------------------------
@@ -413,8 +520,9 @@ function goTo(pose: Pose, ms: number) {
 }
 
 function setMode(mode: Mode, ms = 600) {
-  if (mode === "tee" && state.ball) {
-    state.ball = null;
+  if (mode === "tee" && (state.trail.length || state.target) && !gpsLive()) {
+    state.trail = [];
+    state.target = null;
     suggestAndUpdate();
   }
   state.mode = mode;
@@ -478,19 +586,66 @@ const endPointer = (e: PointerEvent) => {
   const dt = performance.now() - swipe.t;
   swipe = null;
   if (dt < 300 && Math.abs(dx) > 60 && Math.abs(dy) < Math.abs(dx) * Math.tan(Math.PI / 6)) step(dx < 0 ? 1 : -1);
-  else if (e.type === "pointerup" && dt < 350 && Math.hypot(dx, dy) < 8 && state.book) hitFrom(e.clientX, e.clientY);
+  else if (e.type === "pointerup" && dt < 350 && Math.hypot(dx, dy) < 8) {
+    const p = groundAt(e.clientX, e.clientY);
+    if (p) aimAt(p);
+  }
 };
 
-/** Yardage book: tap the ground to play the next shot from there. */
-function hitFrom(x: number, y: number) {
+function groundAt(x: number, y: number): XY | null {
   const ndc = new THREE.Vector2((x / window.innerWidth) * 2 - 1, -(y / window.innerHeight) * 2 + 1);
-  const p = state.scene?.pick(ndc, camera);
-  if (!p) return;
-  state.ball = p;
-  suggestAndUpdate();
+  return state.scene?.pick(ndc, camera) ?? null;
 }
 renderer.domElement.addEventListener("pointerup", endPointer);
 renderer.domElement.addEventListener("pointercancel", endPointer);
+
+// --- dragging the target -------------------------------------------------
+
+/** Grab offset so the target stays where it was under the finger, not jump to the fingertip. */
+let drag: { id: number; dx: number; dy: number; el: HTMLElement } | null = null;
+let dragFrame = 0;
+let dragAt: XY | null = null;
+
+function onDragMove(e: PointerEvent) {
+  if (!drag || e.pointerId !== drag.id) return;
+  const p = groundAt(e.clientX + drag.dx, e.clientY + drag.dy);
+  if (!p) return;
+  dragAt = p;
+  if (!dragFrame)
+    dragFrame = requestAnimationFrame(() => {
+      dragFrame = 0;
+      if (dragAt) aimAt(dragAt, 150);
+    });
+}
+
+function onDragEnd(e: PointerEvent) {
+  if (!drag || e.pointerId !== drag.id) return;
+  const el = drag.el;
+  drag = null;
+  cancelAnimationFrame(dragFrame);
+  dragFrame = 0;
+  window.removeEventListener("pointermove", onDragMove);
+  window.removeEventListener("pointerup", onDragEnd);
+  window.removeEventListener("pointercancel", onDragEnd);
+  controls.enabled = true;
+  el.classList.remove("dragging");
+  if (dragAt) aimAt(dragAt);
+  dragAt = null;
+}
+
+function bindTarget(el: HTMLElement) {
+  el.addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const r = el.getBoundingClientRect();
+    drag = { id: e.pointerId, dx: r.left + r.width / 2 - e.clientX, dy: r.top + r.height / 2 - e.clientY, el };
+    controls.enabled = false;
+    el.classList.add("dragging");
+    window.addEventListener("pointermove", onDragMove);
+    window.addEventListener("pointerup", onDragEnd);
+    window.addEventListener("pointercancel", onDragEnd);
+  });
+}
 
 // --- sheets --------------------------------------------------------------
 
@@ -514,8 +669,10 @@ function menuSheet() {
     .join("");
   openSheet(
     `<h3>Settings</h3>
-    <button class="row" data-book><span>Yardage book<span class="hint">Swipe through your clubs to see where each one lands and misses</span></span><span class="switch${state.book ? " on" : ""}"></span></button>
+    <button class="row" data-book><span>Yardage book<span class="hint">Swipe clubs to see where each one lands and misses</span></span><span class="switch${state.book ? " on" : ""}"></span></button>
     <button class="row" data-clubs><span>My clubs<span class="hint">Carries and miss spread</span></span><span class="muted">›</span></button>
+    <button class="row" data-score><span>Scorecard<span class="hint">${roundHere() ? "Round in progress" : "Start a round or see past scores"}</span></span><span class="muted">›</span></button>
+    <button class="row" data-gps><span>Live GPS<span class="hint">Yardages from where you are on the course</span></span><span class="switch${state.gpsOn ? " on" : ""}"></span></button>
     <h4>Courses</h4>${rows}`,
     (body) => {
       body.querySelector("[data-book]")!.addEventListener("click", (e) => {
@@ -525,6 +682,11 @@ function menuSheet() {
         window.setTimeout(closeSheet, 220);
       });
       body.querySelector("[data-clubs]")!.addEventListener("click", clubsSheet);
+      body.querySelector("[data-score]")!.addEventListener("click", scoreSheet);
+      body.querySelector("[data-gps]")!.addEventListener("click", () => {
+        closeSheet();
+        toggleGps();
+      });
       body.querySelectorAll<HTMLButtonElement>("[data-slug]").forEach((b) =>
         b.addEventListener("click", () => {
           closeSheet();
@@ -611,7 +773,8 @@ function teeSheet() {
         closeSheet();
         state.teeSet = b.dataset.key!;
         if (state.hole && state.scene) state.scene.setTee(teeFor(state.hole));
-        state.ball = null;
+        state.trail = [];
+        state.target = null;
         suggestAndUpdate();
         setMode(state.mode);
       }),
@@ -676,8 +839,231 @@ function creditsSheet() {
 
 $("menu").addEventListener("click", menuSheet);
 $("tee-chip").addEventListener("click", teeSheet);
-$("card").addEventListener("click", infoSheet);
+$("card").addEventListener("click", (e) => {
+  const act = (e.target as HTMLElement).closest<HTMLElement>("[data-act]")?.dataset.act;
+  if (act === "hit") hit();
+  else if (act === "undo") undo();
+  else if (act === "clear") {
+    state.target = null;
+    updateShot();
+  } else infoSheet();
+});
+$("score-bug").addEventListener("click", scoreSheet);
+$("gps").addEventListener("click", toggleGps);
 $("credits").addEventListener("click", creditsSheet);
+
+// --- GPS -----------------------------------------------------------------
+
+let watchId: number | null = null;
+let needHole = true;
+/** Where the club was last suggested from, so walking re-suggests only every few metres. */
+let suggestedAt: XY | null = null;
+
+function segDist(p: XY, a: XY, b: XY) {
+  const [dx, dy] = [b[0] - a[0], b[1] - a[1]];
+  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy || 1)));
+  return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
+}
+
+function nearestHole(course: Course, p: XY): Hole {
+  let best = course.holes[0];
+  let bestD = Infinity;
+  for (const h of course.holes) {
+    const line = [...h.line, h.green.middle];
+    for (let i = 0; i < line.length - 1; i++) {
+      const d = segDist(p, line[i], line[i + 1]);
+      if (d < bestD) [best, bestD] = [h, d];
+    }
+  }
+  return best;
+}
+
+function stopGps() {
+  if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+  watchId = null;
+  state.gpsOn = false;
+  state.gps = null;
+  $("gps").classList.remove("active", "pending");
+  state.scene?.setMe(null);
+  suggestAndUpdate();
+}
+
+function applyFix(c: GeolocationCoordinates) {
+  const { course } = state;
+  if (!course || !state.gpsOn) return;
+  const p = lonLatToLocal(course, c.longitude, c.latitude);
+  const [x0, y0, x1, y1] = course.bounds.local;
+  const margin = 150;
+  if (p[0] < x0 - margin || p[0] > x1 + margin || p[1] < y0 - margin || p[1] > y1 + margin) {
+    const miles = Math.hypot(...p) / 1609.34;
+    toast(`You're ${miles < 10 ? miles.toFixed(1) : Math.round(miles)} mi from ${course.name}`, 2600);
+    stopGps();
+    return;
+  }
+  state.gps = { p, accM: c.accuracy };
+  $("gps").classList.remove("pending");
+  $("gps").classList.add("active");
+  if (needHole) {
+    needHole = false;
+    const hole = nearestHole(course, p);
+    if (hole.number !== state.hole?.number) {
+      showHole(hole.number, true);
+      return;
+    }
+  }
+  state.trail = [];
+  state.scene?.setMe(state.gps);
+  if (!suggestedAt || Math.hypot(p[0] - suggestedAt[0], p[1] - suggestedAt[1]) > 5) {
+    suggestedAt = p;
+    suggestAndUpdate();
+  } else updateShot();
+}
+
+function toggleGps() {
+  if (state.gpsOn) return stopGps();
+  if (!("geolocation" in navigator)) return toast("This browser can't share your location");
+  state.gpsOn = true;
+  needHole = true;
+  suggestedAt = null;
+  $("gps").classList.add("pending");
+  toast("Finding you…");
+  watchId = navigator.geolocation.watchPosition(
+    (pos) => applyFix(pos.coords),
+    (err) => {
+      toast(err.code === err.PERMISSION_DENIED ? "Location is turned off for this site" : "Couldn't get a GPS fix", 2600);
+      stopGps();
+    },
+    { enableHighAccuracy: true, maximumAge: 2000, timeout: 30000 },
+  );
+}
+
+// --- scorecard -----------------------------------------------------------
+
+const roundHere = () => {
+  const r = currentRound();
+  return r && r.course === state.course?.slug ? r : null;
+};
+
+function renderScoreBug() {
+  const r = roundHere();
+  const bug = $("score-bug");
+  bug.hidden = !r;
+  if (!r) return;
+  const t = totals(r);
+  bug.innerHTML = t.played ? `<b>${toPar(t)}</b><span>thru ${t.played}</span>` : `<b>E</b><span>Hole ${state.hole?.number ?? 1}</span>`;
+}
+
+function scoreClass(strokes: number, par: number | null) {
+  if (!par) return "";
+  const d = strokes - par;
+  return d <= -2 ? "eagle" : d === -1 ? "birdie" : d === 1 ? "bogey" : d >= 2 ? "double" : "par";
+}
+
+function cardTable(r: Round, holes: number[], label: string) {
+  const t = totals(r, holes);
+  const cells = (f: (n: number) => string) => holes.map((n) => `<td data-hole="${n}">${f(n)}</td>`).join("");
+  return `<table class="scorecard">
+    <tr class="h"><th>Hole</th>${cells((n) => `${n}`)}<th>${label}</th></tr>
+    <tr class="p"><th>Par</th>${cells((n) => `${r.pars[n] ?? "–"}`)}<th>${holes.reduce((s, n) => s + (r.pars[n] ?? 0), 0)}</th></tr>
+    <tr class="s"><th>Score</th>${cells((n) => {
+      const s = r.scores[n];
+      return s ? `<span class="${scoreClass(s.strokes, r.pars[n])}">${s.strokes}</span>` : "";
+    })}<th>${t.played ? t.strokes : ""}</th></tr>
+    <tr class="pt"><th>Putts</th>${cells((n) => `${r.scores[n]?.putts ?? ""}`)}<th>${t.played ? t.putts : ""}</th></tr>
+  </table>`;
+}
+
+function scoreSheet() {
+  const { course, hole } = state;
+  if (!course || !hole) return;
+  const r = roundHere();
+  const teeLabel = course.tee_sets.find((s) => s.key === state.teeSet)?.label ?? "";
+  if (!r) {
+    const past = pastRounds()
+      .slice(0, 12)
+      .map((p) => {
+        const t = totals(p);
+        const date = new Date(p.startedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+        return `<div class="row"><span>${p.courseName}<br><span class="muted">${date} · ${p.tee} · ${t.played} holes</span></span><span><b>${t.strokes}</b> <span class="muted">${toPar(t)}</span> <button class="x" data-del="${p.id}" aria-label="Delete round">✕</button></span></div>`;
+      })
+      .join("");
+    openSheet(
+      `<h3>Scorecard</h3>
+      <p class="sub">${course.name}${teeLabel ? ` · ${teeLabel} tees` : ""}</p>
+      <button class="primary" data-start>Start a round</button>
+      ${past ? `<h4>Past rounds</h4>${past}` : ""}`,
+      (body) => {
+        body.querySelector("[data-start]")!.addEventListener("click", () => {
+          const pars = Object.fromEntries(course.holes.map((h) => [h.number, h.par]));
+          const other = currentRound();
+          startRound(course.slug, course.name, teeLabel, pars);
+          if (other) toast(`Saved your round at ${other.courseName}`, 2000);
+          renderScoreBug();
+          scoreSheet();
+        });
+        body.querySelectorAll<HTMLButtonElement>("[data-del]").forEach((b) =>
+          b.addEventListener("click", () => {
+            deleteRound(b.dataset.del!);
+            scoreSheet();
+          }),
+        );
+      },
+    );
+    return;
+  }
+  const par = hole.par ?? 4;
+  const mine = r.scores[hole.number];
+  const strokeBtns = Array.from({ length: par + 4 }, (_, i) => i + 1)
+    .map((n) => `<button data-strokes="${n}" class="${scoreClass(n, hole.par)}${mine?.strokes === n ? " active" : ""}">${n}</button>`)
+    .join("");
+  const puttBtns = [0, 1, 2, 3, 4]
+    .map((n) => `<button data-putts="${n}" class="${mine?.putts === n ? "active" : ""}">${n}${n === 4 ? "+" : ""}</button>`)
+    .join("");
+  const t = totals(r);
+  const front = Array.from({ length: 9 }, (_, i) => i + 1);
+  const back = Array.from({ length: 9 }, (_, i) => i + 10);
+  openSheet(
+    `<div class="score-head"><h3>Hole ${hole.number}${hole.par ? ` · Par ${hole.par}` : ""}</h3><span class="total">${t.played ? `${t.strokes} · <b>${toPar(t)}</b>` : ""}</span></div>
+    <h4>Strokes</h4><div class="strokes">${strokeBtns}</div>
+    <h4>Putts</h4><div class="segmented">${puttBtns}</div>
+    <button class="primary" data-next>${hole.number === 18 ? "Done" : `Hole ${hole.number + 1} ›`}</button>
+    <h4>Card</h4>
+    ${cardTable(r, front, "Out")}${cardTable(r, back, "In")}
+    <div class="row"><span>Total</span><span><b>${t.played ? t.strokes : "–"}</b> <span class="muted">${t.played ? `${toPar(t)} thru ${t.played} · ${t.putts} putts` : ""}</span></span></div>
+    <button class="link" data-finish>Finish round</button>`,
+    (body) => {
+      const save = (patch: Partial<{ strokes: number; putts: number | null }>) => {
+        const cur = r.scores[hole.number] ?? { strokes: par, putts: null };
+        setScore(hole.number, { ...cur, ...patch });
+        renderScoreBug();
+        scoreSheet();
+      };
+      body.querySelectorAll<HTMLButtonElement>("[data-strokes]").forEach((b) =>
+        b.addEventListener("click", () => save({ strokes: Number(b.dataset.strokes) })),
+      );
+      body.querySelectorAll<HTMLButtonElement>("[data-putts]").forEach((b) =>
+        b.addEventListener("click", () => save({ putts: Number(b.dataset.putts) })),
+      );
+      body.querySelector("[data-next]")!.addEventListener("click", () => {
+        closeSheet();
+        if (hole.number < 18) showHole(hole.number + 1, true);
+      });
+      body.querySelectorAll<HTMLElement>("td[data-hole]").forEach((td) =>
+        td.addEventListener("click", async () => {
+          const n = Number(td.dataset.hole);
+          if (n !== state.hole?.number) await showHole(n);
+          scoreSheet();
+        }),
+      );
+      body.querySelector("[data-finish]")!.addEventListener("click", () => {
+        finishRound();
+        closeSheet();
+        renderScoreBug();
+        toast(t.played ? `Saved · ${t.strokes} (${toPar(t)})` : "Round discarded", 2000);
+      });
+    },
+  );
+}
 
 // --- loading -------------------------------------------------------------
 
@@ -697,8 +1083,11 @@ async function showHole(number: number, announce = false) {
   }
   state.hole = hole;
   state.grid = grid;
-  state.ball = null;
+  state.trail = [];
+  state.target = null;
   state.scene = buildHoleScene(course, hole, grid, resolution, teeFor(hole), state.exag);
+  bindTarget(state.scene.targetElement);
+  if (state.gps) state.scene.setMe(state.gps);
   sun.position.copy(state.scene.sunDirection).multiplyScalar(1000);
   scene.add(state.scene.group);
   history.replaceState(null, "", `#${course.slug}/${hole.number}`);

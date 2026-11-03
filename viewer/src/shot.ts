@@ -173,12 +173,17 @@ function surfaceMap(course: Course): SurfaceMap {
 export interface ShotPlan {
   club: Club;
   ball: XY;
+  /** Where the player aims; the miss pattern is centred near it. */
+  aim: XY;
+  /** Centre of the miss pattern: the aim shifted by the usual miss. */
   land: XY;
   /** Unit vector of the shot, in local metres. */
   dir: XY;
   carryYd: number;
-  /** Carry after allowing about 1 yd per 3 ft of drop or rise to the landing spot. */
-  effectiveYd: number;
+  /** Straight-line yards from the ball to the aim. */
+  distYd: number;
+  /** distYd allowing about 1 yd per 3 ft of drop or rise. */
+  playsYd: number;
   dropFt: number;
   leavesYd: number;
   ellipse: XY[];
@@ -224,21 +229,49 @@ function seeded(seed: number) {
 
 const SAMPLES = 400;
 
-export function planShot(course: Course, hole: Hole, tee: Tee, grid: HeightGrid, ball: XY, club: Club, miss: Miss): ShotPlan {
-  const aim = aimPoint(hole, tee, ball, club.carry * YD);
-  const len = dist(ball, aim) || 1;
-  const dir: XY = [(aim[0] - ball[0]) / len, (aim[1] - ball[1]) / len];
+/** Feet the ground falls from a to b (negative when it rises). */
+export function dropBetween(grid: HeightGrid, a: XY, b: XY): number {
+  const d = (grid.heightAt(a[0], a[1]) - grid.heightAt(b[0], b[1])) / FT;
+  return Number.isFinite(d) ? d : 0;
+}
+
+/** Yards from a to b, adjusted about 1 yd per 3 ft of drop or rise. */
+export function playsLikeYd(grid: HeightGrid, a: XY, b: XY): number {
+  return dist(a, b) / YD - dropBetween(grid, a, b) / 3;
+}
+
+export const yardsBetween = (a: XY, b: XY) => dist(a, b) / YD;
+
+/**
+ * Plan a shot with a club. Without a target the player aims down the line of play at the
+ * club's plays-like carry; with one, the shot is aimed straight at it.
+ */
+export function planShot(
+  course: Course,
+  hole: Hole,
+  tee: Tee,
+  grid: HeightGrid,
+  ball: XY,
+  club: Club,
+  miss: Miss,
+  target: XY | null = null,
+  sampleCount = SAMPLES,
+): ShotPlan {
+  const toward = target ?? aimPoint(hole, tee, ball, club.carry * YD);
+  const len = dist(ball, toward) || 1;
+  const dir: XY = [(toward[0] - ball[0]) / len, (toward[1] - ball[1]) / len];
   const right: XY = [dir[1], -dir[0]];
 
-  const zBall = grid.heightAt(ball[0], ball[1]);
-  let effective = club.carry;
-  let land: XY = ball;
-  let dropFt = 0;
-  for (let i = 0; i < 3; i++) {
-    land = [ball[0] + dir[0] * effective * YD, ball[1] + dir[1] * effective * YD];
-    dropFt = (zBall - grid.heightAt(land[0], land[1])) / FT;
-    effective = club.carry + dropFt / 3;
+  let land: XY = target ?? ball;
+  if (!target) {
+    let effective = club.carry;
+    for (let i = 0; i < 3; i++) {
+      land = [ball[0] + dir[0] * effective * YD, ball[1] + dir[1] * effective * YD];
+      effective = club.carry + dropBetween(grid, ball, land) / 3;
+    }
   }
+  const aim = land;
+  const dropFt = dropBetween(grid, ball, aim);
   const bias = (miss === "right" ? 1 : miss === "left" ? -1 : 0) * club.side * 0.35 * YD;
   const center: XY = [land[0] + right[0] * bias, land[1] + right[1] * bias];
   const sideM = club.side * YD;
@@ -257,7 +290,7 @@ export function planShot(course: Course, hole: Hole, tee: Tee, grid: HeightGrid,
   const rand = seeded(hole.number * 1009 + Math.round(club.carry) * 17 + Math.round(ball[0] + ball[1]));
   const counts = new Map<Surface, number>();
   const samples: ShotPlan["samples"] = [];
-  for (let i = 0; i < SAMPLES; i++) {
+  for (let i = 0; i < sampleCount; i++) {
     const [g1, g2] = gaussian(rand);
     const a = (g1 * sideM) / 1.5;
     const b = (g2 * depthM) / 1.5;
@@ -267,23 +300,31 @@ export function planShot(course: Course, hole: Hole, tee: Tee, grid: HeightGrid,
     samples.push({ p, surface });
   }
   const mix = [...counts.entries()]
-    .map(([surface, n]) => ({ surface, pct: Math.round((n / SAMPLES) * 100) }))
+    .map(([surface, n]) => ({ surface, pct: Math.round((n / sampleCount) * 100) }))
     .filter((m) => m.pct > 0)
     .sort((a, b) => b.pct - a.pct);
 
+  const distYd = dist(ball, aim) / YD;
   return {
     club,
     ball,
+    aim,
     land: center,
     dir,
     carryYd: club.carry,
-    effectiveYd: effective,
+    distYd,
+    playsYd: distYd - dropFt / 3,
     dropFt,
-    leavesYd: dist(center, hole.green.middle) / YD,
+    leavesYd: dist(aim, hole.green.middle) / YD,
     ellipse,
     samples,
     mix,
   };
+}
+
+/** The enabled club whose carry is closest to a plays-like distance; drivers only off the tee. */
+export function clubFor(bag: Bag, playsYd: number, fromTee: boolean): number {
+  return suggestClub(bag, playsYd, fromTee, 3);
 }
 
 /** The enabled club whose carry is closest to the distance, preferring the longest club off a par 4/5 tee. */

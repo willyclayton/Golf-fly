@@ -30,13 +30,18 @@
       </button>
     </header>
 
-    <button id="card" class="card" aria-label="Hole details"></button>
+    <button id="score-bug" class="score-bug" aria-label="Scorecard" hidden></button>
+
+    <div id="card" class="card" role="button" tabindex="0" aria-label="Hole details"></div>
 
     <div id="clubs" class="clubs" hidden>
       <div id="club-track" class="track" role="listbox" aria-label="Club"></div>
     </div>
 
     <nav class="cams" aria-label="Camera">
+      <button id="gps" aria-label="Use my location">
+        <svg viewBox="0 0 24 24"><path d="M20 4L4 11l7 2 2 7z" /></svg>
+      </button>
       <button data-cam="fly" aria-label="Fly the hole">
         <svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z" class="solid" /></svg>
       </button>

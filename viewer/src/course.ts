@@ -93,10 +93,30 @@ export interface Course {
     osm: { timestamp: string; credit: string };
     elevation: { name: string; quality: string; confidence: string; year: number | null; credit: string };
   };
+  /** Transverse Mercator centred on (lat0, lon0) with k=1; local x east, y north, in metres. */
+  frame: { lat0: number; lon0: number };
+  bounds: { local: [number, number, number, number] };
   outline: Geometry;
   tee_sets: TeeSet[];
   holes: Hole[];
   features: Feature[];
+}
+
+/**
+ * GPS position in the course frame. Within a couple of kilometres of the frame centre this
+ * local-ellipsoid approximation agrees with the transverse Mercator to a few centimetres.
+ */
+export function lonLatToLocal(course: Course, lon: number, lat: number): XY {
+  const a = 6378137;
+  const f = 1 / 298.257223563;
+  const e2 = f * (2 - f);
+  const rad = Math.PI / 180;
+  const { lat0, lon0 } = course.frame;
+  const s = Math.sin(lat0 * rad);
+  const w = 1 - e2 * s * s;
+  const n = a / Math.sqrt(w);
+  const m = (a * (1 - e2)) / w ** 1.5;
+  return [(lon - lon0) * rad * n * Math.cos(lat * rad), (lat - lat0) * rad * m];
 }
 
 export interface CourseIndexEntry {

@@ -78,10 +78,27 @@ export interface HoleScene {
   setTee(tee: Tee): void;
   /** Draw a yardage-book shot (flight, miss ellipse, landing scatter), or clear it with null. */
   setShot(plan: ShotPlan | null): void;
+  /** Show the target with its ball-to-target and target-to-green yardages, or hide it. */
+  setAim(aim: Aim | null): void;
+  /** The target marker's DOM element, which takes pointer input so it can be dragged. */
+  targetElement: HTMLElement;
+  /** Ball positions on this hole so far, starting at the tee; the last is where it lies. */
+  setTrail(points: XY[]): void;
+  /** The player's GPS position and its accuracy radius, or null. */
+  setMe(me: { p: XY; accM: number } | null): void;
   /** Local point on the terrain under a screen position in normalised device coordinates. */
   pick(ndc: THREE.Vector2, camera: THREE.Camera): XY | null;
   setResolution(width: number, height: number): void;
   dispose(): void;
+}
+
+export interface Aim {
+  ball: XY;
+  target: XY;
+  distYd: number;
+  leavesYd: number;
+  /** A shot's flight arc already joins ball and target, so skip the ground line. */
+  flight: boolean;
 }
 
 interface Tree {
@@ -553,7 +570,7 @@ export function buildHoleScene(
     const { ball, land, ellipse, samples, club } = shot;
 
     // Ball flight: a simple arc whose apex grows with carry.
-    const apex = 6 + shot.effectiveYd * 0.9144 * 0.11;
+    const apex = 6 + shot.distYd * 0.9144 * 0.11;
     const flight: THREE.Vector3[] = [];
     for (let i = 0; i <= 48; i++) {
       const t = i / 48;
@@ -606,23 +623,99 @@ export function buildHoleScene(
     dots.renderOrder = 4;
     shotGroup.add(dots);
 
-    const beyond = (club.depth * 0.9144 + 4) / 1;
+    const beyond = club.depth * 0.9144 + 4;
     const tag: XY = [land[0] + shot.dir[0] * beyond, land[1] + shot.dir[1] * beyond];
-    addLabel(`${club.name} · ${Math.round(club.carry)}`, "club", ground(tag, 3), -2, shotGroup, shotLabels);
-    if (shot.leavesYd > 12) {
-      const mid = hole.green.middle;
-      const leave = [ground(land, 0.6), ground(mid, 0.6)];
-      shotGroup.add(line(leave, 0xffffff, 1.5, 0.9, shotLineMats, true));
-      const half: XY = [(land[0] + mid[0]) / 2, (land[1] + mid[1]) / 2];
-      addLabel(`${Math.round(shot.leavesYd)} to go`, "leaves", ground(half, 2), -1, shotGroup, shotLabels);
+    addLabel(club.name, "club", ground(tag, 3), -2, shotGroup, shotLabels);
+  };
+
+  // --- aim: the draggable target and its two yardages -------------------
+  const aimGroup = new THREE.Group();
+  const aimLabels: SceneLabel[] = [];
+  const aimLineMats: LineMaterial[] = [];
+  const targetObj = label("", "target");
+  targetObj.element.innerHTML = "<i></i>";
+  targetObj.visible = false;
+  group.add(aimGroup, targetObj);
+  let aim: Aim | null = null;
+
+  const draped = (a: XY, b: XY, lift: number) => {
+    const n = Math.max(2, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 3));
+    return Array.from({ length: n + 1 }, (_, i) => ground([a[0] + ((b[0] - a[0]) * i) / n, a[1] + ((b[1] - a[1]) * i) / n], lift));
+  };
+
+  const drawAim = () => {
+    clearGroup(aimGroup);
+    aimLineMats.length = 0;
+    aimLabels.length = 0;
+    targetObj.visible = !!aim;
+    if (!aim) return;
+    const { ball, target } = aim;
+    targetObj.position.copy(ground(target, 0.4));
+    if (!aim.flight) {
+      const halo = line(draped(ball, target, 0.55), 0x14201a, 4, 0.5, aimLineMats);
+      (halo.material as LineMaterial).depthWrite = false;
+      const l = line(draped(ball, target, 0.6), 0xffffff, 2, 1, aimLineMats);
+      l.renderOrder = 2;
+      aimGroup.add(halo, l);
     }
-    if (dist2(ball, tee.point) > 4) {
-      const b = label("", "ball");
-      b.position.copy(ground(ball, 0.3));
-      shotGroup.add(b);
+    const half: XY = [(ball[0] + target[0]) / 2, (ball[1] + target[1]) / 2];
+    addLabel(`${Math.round(aim.distYd)}`, "yd", ground(half, aim.flight ? 8 : 3), -3, aimGroup, aimLabels);
+    const mid = hole.green.middle;
+    if (aim.leavesYd > 3) {
+      aimGroup.add(line(draped(target, mid, 0.6), 0xffffff, 1.5, 0.9, aimLineMats, true));
+      const h2: XY = [(target[0] + mid[0]) / 2, (target[1] + mid[1]) / 2];
+      addLabel(`${Math.round(aim.leavesYd)}`, "yd leave", ground(h2, 3), -3, aimGroup, aimLabels);
     }
   };
-  const dist2 = (a: XY, b: XY) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+
+  // --- earlier shots on this hole, and where the ball lies now ------------
+  const trailGroup = new THREE.Group();
+  const trailLineMats: LineMaterial[] = [];
+  const trailLabels: SceneLabel[] = [];
+  group.add(trailGroup);
+  let trail: XY[] = [];
+
+  const drawTrail = () => {
+    clearGroup(trailGroup);
+    trailLineMats.length = 0;
+    trailLabels.length = 0;
+    for (let i = 0; i < trail.length - 1; i++) {
+      const [a, b] = [trail[i], trail[i + 1]];
+      const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      const apex = 4 + len * 0.1;
+      const pts = Array.from({ length: 33 }, (_, k) => {
+        const t = k / 32;
+        return ground([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t], 0.3 + apex * 4 * t * (1 - t));
+      });
+      trailGroup.add(line(pts, 0xffffff, 1.5, 0.55, trailLineMats));
+      const spot = label("", i === trail.length - 2 ? "ball" : "spot");
+      spot.position.copy(ground(b, 0.3));
+      trailGroup.add(spot);
+    }
+  };
+
+  // --- you, from GPS ------------------------------------------------------
+  const meGroup = new THREE.Group();
+  const meLineMats: LineMaterial[] = [];
+  group.add(meGroup);
+  let me: { p: XY; accM: number } | null = null;
+  const drawMe = () => {
+    clearGroup(meGroup);
+    meLineMats.length = 0;
+    if (!me) return;
+    const { p, accM } = me;
+    const dot = label("", "me");
+    dot.position.copy(ground(p, 0.3));
+    meGroup.add(dot);
+    if (accM > 2) {
+      const ring = Array.from({ length: 49 }, (_, i) => {
+        const t = (i / 48) * Math.PI * 2;
+        return ground([p[0] + Math.cos(t) * accM, p[1] + Math.sin(t) * accM], 0.4);
+      });
+      meGroup.add(line(ring, 0x4aa3ff, 1.5, 0.8, meLineMats));
+    }
+  };
+
   const raycaster = new THREE.Raycaster();
 
   const rebuildOverlays = () => {
@@ -683,12 +776,15 @@ export function buildHoleScene(
     placeTrees();
     rebuildOverlays();
     drawShot();
+    drawAim();
+    drawTrail();
+    drawMe();
   };
   setExaggeration(initialExag);
 
   return {
     group,
-    labels: () => (shotLabels.length ? [...shotLabels, ...labels] : labels),
+    labels: () => [...aimLabels, ...shotLabels, ...trailLabels, ...labels],
     sunDirection,
     ground,
     setExaggeration,
@@ -700,6 +796,19 @@ export function buildHoleScene(
       shot = plan;
       drawShot();
     },
+    setAim(a: Aim | null) {
+      aim = a;
+      drawAim();
+    },
+    targetElement: targetObj.element,
+    setTrail(points: XY[]) {
+      trail = points;
+      drawTrail();
+    },
+    setMe(m: { p: XY; accM: number } | null) {
+      me = m;
+      drawMe();
+    },
     pick(ndc: THREE.Vector2, cam: THREE.Camera) {
       raycaster.setFromCamera(ndc, cam);
       const hit = raycaster.intersectObject(terrain, false)[0];
@@ -707,11 +816,12 @@ export function buildHoleScene(
     },
     setResolution(width: number, height: number) {
       resolution.set(width, height);
-      for (const m of [...lineMats, ...shotLineMats]) m.resolution.set(width, height);
+      for (const m of [...lineMats, ...shotLineMats, ...aimLineMats, ...trailLineMats, ...meLineMats]) m.resolution.set(width, height);
     },
     dispose() {
       clearOverlays();
-      clearGroup(shotGroup);
+      for (const g of [shotGroup, aimGroup, trailGroup, meGroup]) clearGroup(g);
+      targetObj.element.remove();
       for (const mesh of [terrain, skirt, canopies, trunks]) {
         mesh.geometry.dispose();
         (mesh.material as THREE.Material).dispose();
