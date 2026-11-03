@@ -6,6 +6,29 @@ import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import type { Course, Feature, Geometry, HeightGrid, Hole, Tee, XY } from "./course";
+import type { ShotPlan, Surface } from "./shot";
+
+const SCATTER_COLORS: Record<Surface, string> = {
+  fairway: "#ffffff",
+  green: "#ffffff",
+  rough: "#ffe08a",
+  trees: "#ff9f43",
+  sand: "#ff9f43",
+  water: "#ff4d4d",
+  off: "#ff4d4d",
+};
+const SCATTER_SHOWN = 120;
+
+const dotTexture = (() => {
+  const c = document.createElement("canvas");
+  c.width = c.height = 32;
+  const ctx = c.getContext("2d")!;
+  ctx.fillStyle = "#fff";
+  ctx.beginPath();
+  ctx.arc(16, 16, 14, 0, Math.PI * 2);
+  ctx.fill();
+  return new THREE.CanvasTexture(c);
+})();
 
 export const PALETTE = {
   outside: "#6f8a58",
@@ -46,13 +69,17 @@ export interface SceneLabel {
 
 export interface HoleScene {
   group: THREE.Group;
-  labels: SceneLabel[];
+  labels(): SceneLabel[];
   /** Unit vector pointing at the sun, for the directional light. */
   sunDirection: THREE.Vector3;
   /** Scene position of a local point on the ground, at the current exaggeration. */
   ground(p: XY, lift?: number): THREE.Vector3;
   setExaggeration(exag: number): void;
   setTee(tee: Tee): void;
+  /** Draw a yardage-book shot (flight, miss ellipse, landing scatter), or clear it with null. */
+  setShot(plan: ShotPlan | null): void;
+  /** Local point on the terrain under a screen position in normalised device coordinates. */
+  pick(ndc: THREE.Vector2, camera: THREE.Camera): XY | null;
   setResolution(width: number, height: number): void;
   dispose(): void;
 }
@@ -443,14 +470,18 @@ export function buildHoleScene(
   trees.forEach((_, i) => canopies.setColorAt(i, dark.clone().lerp(light, rand()).multiplyScalar(0.92 + rand() * 0.16)));
 
   const overlays = new THREE.Group();
+  const shotGroup = new THREE.Group();
   const group = new THREE.Group();
-  group.add(skirt, terrain, canopies, trunks, overlays);
+  group.add(skirt, terrain, canopies, trunks, overlays, shotGroup);
 
   const features = new Map(course.features.map((f) => [f.id, f]));
   let exag = initialExag;
   let tee = initialTee;
   const labels: SceneLabel[] = [];
+  const shotLabels: SceneLabel[] = [];
   const lineMats: LineMaterial[] = [];
+  const shotLineMats: LineMaterial[] = [];
+  let shot: ShotPlan | null = null;
   const ground = (p: XY, lift = 0) => new THREE.Vector3(p[0], relHeight(p[0], p[1]) * exag + lift, -p[1]);
 
   const placeTrees = () => {
@@ -469,35 +500,130 @@ export function buildHoleScene(
     trunks.computeBoundingSphere();
   };
 
-  const line = (pts: THREE.Vector3[], color: number, width: number, opacity: number) => {
+  const line = (pts: THREE.Vector3[], color: number, width: number, opacity: number, mats = lineMats, dashed = false) => {
     const g = new LineGeometry();
     g.setPositions(pts.flatMap((p) => p.toArray()));
-    const mat = new LineMaterial({ color, linewidth: width, transparent: opacity < 1, opacity, resolution });
-    lineMats.push(mat);
-    return new Line2(g, mat);
+    const mat = new LineMaterial({
+      color,
+      linewidth: width,
+      transparent: opacity < 1,
+      opacity,
+      resolution,
+      dashed,
+      dashSize: 3,
+      gapSize: 2.5,
+    });
+    mats.push(mat);
+    const l = new Line2(g, mat);
+    if (dashed) l.computeLineDistances();
+    return l;
   };
 
-  const addLabel = (text: string, cls: string, at: THREE.Vector3, priority: number) => {
+  const addLabel = (text: string, cls: string, at: THREE.Vector3, priority: number, into = overlays, list = labels) => {
     const l = label(text, cls);
     l.position.copy(at);
-    overlays.add(l);
-    labels.push({ object: l, priority });
+    into.add(l);
+    list.push({ object: l, priority });
   };
 
-  const clearOverlays = () => {
-    for (const child of [...overlays.children]) {
-      overlays.remove(child);
+  const clearGroup = (g: THREE.Group) => {
+    for (const child of [...g.children]) {
+      g.remove(child);
       child.traverse((o) => {
         if (o instanceof CSS2DObject) o.element.remove();
-        if (o instanceof THREE.Mesh || o instanceof Line2) {
+        if (o instanceof THREE.Mesh || o instanceof Line2 || o instanceof THREE.Points) {
           o.geometry.dispose();
           (o.material as THREE.Material).dispose();
         }
       });
     }
+  };
+
+  const clearOverlays = () => {
+    clearGroup(overlays);
     lineMats.length = 0;
     labels.length = 0;
   };
+
+  const drawShot = () => {
+    clearGroup(shotGroup);
+    shotLineMats.length = 0;
+    shotLabels.length = 0;
+    if (!shot) return;
+    const { ball, land, ellipse, samples, club } = shot;
+
+    // Ball flight: a simple arc whose apex grows with carry.
+    const apex = 6 + shot.effectiveYd * 0.9144 * 0.11;
+    const flight: THREE.Vector3[] = [];
+    for (let i = 0; i <= 48; i++) {
+      const t = i / 48;
+      const p: XY = [ball[0] + (land[0] - ball[0]) * t, ball[1] + (land[1] - ball[1]) * t];
+      flight.push(ground(p, 0.3 + apex * 4 * t * (1 - t)));
+    }
+    shotGroup.add(line(flight, 0xffd23f, 2.5, 1, shotLineMats));
+
+    // Miss ellipse, draped on the ground: a fan of rings so it follows the slope.
+    const ringsN = 3;
+    const seg = ellipse.length - 1;
+    const verts: number[] = [...ground(land, 0.35).toArray()];
+    for (let r = 1; r <= ringsN; r++) {
+      for (let i = 0; i < seg; i++) {
+        const k = r / ringsN;
+        const p: XY = [land[0] + (ellipse[i][0] - land[0]) * k, land[1] + (ellipse[i][1] - land[1]) * k];
+        verts.push(...ground(p, 0.35).toArray());
+      }
+    }
+    const idx: number[] = [];
+    for (let i = 0; i < seg; i++) idx.push(0, 1 + i, 1 + ((i + 1) % seg));
+    for (let r = 1; r < ringsN; r++) {
+      const a0 = 1 + (r - 1) * seg;
+      const b0 = 1 + r * seg;
+      for (let i = 0; i < seg; i++) {
+        const j = (i + 1) % seg;
+        idx.push(a0 + i, b0 + i, b0 + j, a0 + i, b0 + j, a0 + j);
+      }
+    }
+    const fillGeom = new THREE.BufferGeometry();
+    fillGeom.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+    fillGeom.setIndex(idx);
+    const fillMesh = new THREE.Mesh(
+      fillGeom,
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide }),
+    );
+    fillMesh.renderOrder = 3;
+    shotGroup.add(fillMesh, line(ellipse.map((p) => ground(p, 0.4)), 0xffffff, 2, 1, shotLineMats));
+
+    // A sample of simulated landing spots, coloured by what they find.
+    const shown = samples.slice(0, SCATTER_SHOWN);
+    const pts = new THREE.BufferGeometry();
+    pts.setAttribute("position", new THREE.Float32BufferAttribute(shown.flatMap((s) => ground(s.p, 0.5).toArray()), 3));
+    const colors = shown.flatMap((s) => new THREE.Color(SCATTER_COLORS[s.surface]).toArray());
+    pts.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+    const dots = new THREE.Points(
+      pts,
+      new THREE.PointsMaterial({ size: 6, sizeAttenuation: false, vertexColors: true, map: dotTexture, alphaTest: 0.5, depthTest: false }),
+    );
+    dots.renderOrder = 4;
+    shotGroup.add(dots);
+
+    const beyond = (club.depth * 0.9144 + 4) / 1;
+    const tag: XY = [land[0] + shot.dir[0] * beyond, land[1] + shot.dir[1] * beyond];
+    addLabel(`${club.name} · ${Math.round(club.carry)}`, "club", ground(tag, 3), -2, shotGroup, shotLabels);
+    if (shot.leavesYd > 12) {
+      const mid = hole.green.middle;
+      const leave = [ground(land, 0.6), ground(mid, 0.6)];
+      shotGroup.add(line(leave, 0xffffff, 1.5, 0.9, shotLineMats, true));
+      const half: XY = [(land[0] + mid[0]) / 2, (land[1] + mid[1]) / 2];
+      addLabel(`${Math.round(shot.leavesYd)} to go`, "leaves", ground(half, 2), -1, shotGroup, shotLabels);
+    }
+    if (dist2(ball, tee.point) > 4) {
+      const b = label("", "ball");
+      b.position.copy(ground(ball, 0.3));
+      shotGroup.add(b);
+    }
+  };
+  const dist2 = (a: XY, b: XY) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const raycaster = new THREE.Raycaster();
 
   const rebuildOverlays = () => {
     clearOverlays();
@@ -556,12 +682,13 @@ export function buildHoleScene(
     terrain.scale.y = value;
     placeTrees();
     rebuildOverlays();
+    drawShot();
   };
   setExaggeration(initialExag);
 
   return {
     group,
-    labels,
+    labels: () => (shotLabels.length ? [...shotLabels, ...labels] : labels),
     sunDirection,
     ground,
     setExaggeration,
@@ -569,12 +696,22 @@ export function buildHoleScene(
       tee = t;
       rebuildOverlays();
     },
+    setShot(plan: ShotPlan | null) {
+      shot = plan;
+      drawShot();
+    },
+    pick(ndc: THREE.Vector2, cam: THREE.Camera) {
+      raycaster.setFromCamera(ndc, cam);
+      const hit = raycaster.intersectObject(terrain, false)[0];
+      return hit ? [hit.point.x, -hit.point.z] : null;
+    },
     setResolution(width: number, height: number) {
       resolution.set(width, height);
-      for (const m of lineMats) m.resolution.set(width, height);
+      for (const m of [...lineMats, ...shotLineMats]) m.resolution.set(width, height);
     },
     dispose() {
       clearOverlays();
+      clearGroup(shotGroup);
       for (const mesh of [terrain, skirt, canopies, trunks]) {
         mesh.geometry.dispose();
         (mesh.material as THREE.Material).dispose();

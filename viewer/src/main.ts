@@ -12,6 +12,8 @@ import {
   type XY,
 } from "./course";
 import { buildHoleScene, type HoleScene } from "./hole";
+import { defaultSpread, loadBag, planShot, saveBag, suggestClub, SURFACE_LABELS, type Bag, type ShotPlan, type Surface } from "./shot";
+import type { HeightGrid } from "./course";
 import "./style.css";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -65,8 +67,32 @@ interface State {
   exag: number;
   mode: Mode;
   animation: ((now: number) => boolean) | null;
+  grid: HeightGrid | null;
+  /** Yardage book: club strip, shot plan and miss pattern. */
+  book: boolean;
+  bag: Bag;
+  club: number;
+  /** Where the next shot is hit from; null means the tee. */
+  ball: XY | null;
+  plan: ShotPlan | null;
 }
-const state: State = { courses: [], course: null, hole: null, scene: null, teeSet: "", exag: 1.5, mode: "tee", animation: null };
+const BOOK_KEY = "golffly.book";
+const state: State = {
+  courses: [],
+  course: null,
+  hole: null,
+  scene: null,
+  teeSet: "",
+  exag: 1.5,
+  mode: "tee",
+  animation: null,
+  grid: null,
+  book: localStorage.getItem(BOOK_KEY) === "1",
+  bag: loadBag(),
+  club: 0,
+  ball: null,
+  plan: null,
+};
 let loadToken = 0;
 
 function resize() {
@@ -98,13 +124,138 @@ function renderChrome() {
   $("hole-par").textContent = hole.par ? ` · Par ${hole.par}` : "";
   $("hole-hcp").textContent = hole.handicap ? `Hcp ${hole.handicap}` : "";
   $("tee-chip").textContent = course.tee_sets.find((s) => s.key === state.teeSet)?.label ?? "Tee";
-  const plays = Math.abs(tee.elev_change_ft) >= 3 ? `<div class="plays">Plays ${playsLike(tee)}</div>` : "";
-  $("card").innerHTML = `
-    <div class="eyebrow">Centre</div>
-    <div class="big">${Math.round(tee.middle_yd)}</div>
-    <div class="fb">F ${Math.round(tee.front_yd)} · B ${Math.round(tee.back_yd)}</div>
-    ${plays}`;
+  document.body.classList.toggle("book", state.book);
+  $("clubs").hidden = !state.book;
+  if (state.book && state.plan) {
+    const p = state.plan;
+    const drop =
+      Math.abs(p.dropFt) >= 6
+        ? `<div class="from">Flies ${Math.round(p.effectiveYd)} with the ${Math.round(Math.abs(p.dropFt))} ft ${p.dropFt > 0 ? "drop" : "rise"}</div>`
+        : "";
+    const mix = p.mix
+      .slice(0, 4)
+      .map((m) => `<span style="--dot:${SURFACE_DOT[m.surface]}">${SURFACE_LABELS[m.surface]} ${m.pct}%</span>`)
+      .join("");
+    const leaves = p.leavesYd > 12 ? `${Math.round(p.leavesYd)} to centre` : "Pin high";
+    $("card").innerHTML = `
+      <div class="club-name">${p.club.name}</div>
+      <div class="big">${Math.round(p.carryYd)}<small> carry</small></div>
+      <div class="leaves">${leaves}</div>
+      <div class="mix">${mix}</div>
+      ${drop}
+      ${state.ball ? `<div class="from">From your spot · tap the tee view to reset</div>` : ""}`;
+  } else {
+    const plays = Math.abs(tee.elev_change_ft) >= 3 ? `<div class="plays">Plays ${playsLike(tee)}</div>` : "";
+    $("card").innerHTML = `
+      <div class="eyebrow">Centre</div>
+      <div class="big">${Math.round(tee.middle_yd)}</div>
+      <div class="fb">F ${Math.round(tee.front_yd)} · B ${Math.round(tee.back_yd)}</div>
+      ${plays}`;
+  }
   document.querySelectorAll<HTMLButtonElement>("[data-cam]").forEach((b) => b.classList.toggle("active", b.dataset.cam === state.mode));
+}
+
+const SURFACE_DOT: Record<Surface, string> = {
+  fairway: "#ffffff",
+  green: "#9fe07a",
+  rough: "#ffe08a",
+  trees: "#ff9f43",
+  sand: "#f3e1a8",
+  water: "#4aa3df",
+  off: "#ff4d4d",
+};
+
+// --- yardage book --------------------------------------------------------
+
+const clubTrack = $("club-track");
+const enabledClubs = () => state.bag.clubs.map((c, i) => ({ c, i })).filter(({ c }) => c.enabled);
+
+function renderClubStrip() {
+  clubTrack.innerHTML =
+    enabledClubs()
+      .map(({ c, i }) => `<button data-club="${i}" class="${i === state.club ? "active" : ""}"><b>${c.name}</b><span>${Math.round(c.carry)}</span></button>`)
+      .join("") + `<button class="edit" data-edit>Edit</button>`;
+  centerActiveClub("auto");
+}
+
+function centerActiveClub(behavior: ScrollBehavior) {
+  const el = clubTrack.querySelector<HTMLElement>(`[data-club="${state.club}"]`);
+  if (!el) return;
+  ignoreScroll = true;
+  clubTrack.scrollTo({ left: el.offsetLeft - (clubTrack.clientWidth - el.offsetWidth) / 2, behavior });
+  window.setTimeout(() => (ignoreScroll = false), behavior === "smooth" ? 450 : 50);
+}
+
+function selectClub(i: number, scroll = true) {
+  if (i === state.club && state.plan) return;
+  state.club = i;
+  clubTrack.querySelectorAll<HTMLElement>("[data-club]").forEach((b) => b.classList.toggle("active", Number(b.dataset.club) === i));
+  if (scroll) centerActiveClub("smooth");
+  updateShot();
+}
+
+let ignoreScroll = false;
+let scrollTimer = 0;
+clubTrack.addEventListener("scroll", () => {
+  if (ignoreScroll) return;
+  clearTimeout(scrollTimer);
+  scrollTimer = window.setTimeout(() => {
+    const mid = clubTrack.scrollLeft + clubTrack.clientWidth / 2;
+    let best: HTMLElement | null = null;
+    let bestD = Infinity;
+    clubTrack.querySelectorAll<HTMLElement>("[data-club]").forEach((b) => {
+      const d = Math.abs(b.offsetLeft + b.offsetWidth / 2 - mid);
+      if (d < bestD) [best, bestD] = [b, d];
+    });
+    if (best) selectClub(Number((best as HTMLElement).dataset.club), false);
+  }, 110);
+});
+clubTrack.addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>("button");
+  if (!b) return;
+  if (b.dataset.edit !== undefined) clubsSheet();
+  else selectClub(Number(b.dataset.club));
+});
+
+function ballPoint(): XY | null {
+  const { hole } = state;
+  return hole ? (state.ball ?? teeFor(hole).point) : null;
+}
+
+function updateShot() {
+  const { course, hole, grid, scene: hs } = state;
+  if (!course || !hole || !grid || !hs) return;
+  const club = state.bag.clubs[state.club];
+  if (!state.book || !club?.enabled) {
+    state.plan = null;
+    hs.setShot(null);
+  } else {
+    state.plan = planShot(course, hole, teeFor(hole), grid, ballPoint()!, club, state.bag.miss);
+    hs.setShot(state.plan);
+  }
+  renderChrome();
+}
+
+/** Pick the club for the current ball position and redraw. */
+function suggestAndUpdate() {
+  const { hole } = state;
+  if (!hole) return;
+  const ball = ballPoint()!;
+  let toGreen = Math.hypot(hole.green.middle[0] - ball[0], hole.green.middle[1] - ball[1]) / 0.9144;
+  if (state.grid) {
+    const dropFt = (state.grid.heightAt(ball[0], ball[1]) - state.grid.heightAt(...hole.green.middle)) / 0.3048;
+    if (Number.isFinite(dropFt)) toGreen -= dropFt / 3;
+  }
+  state.club = suggestClub(state.bag, toGreen, !state.ball, hole.par);
+  if (state.book) renderClubStrip();
+  state.plan = null;
+  updateShot();
+}
+
+function setBook(on: boolean) {
+  state.book = on;
+  localStorage.setItem(BOOK_KEY, on ? "1" : "0");
+  suggestAndUpdate();
 }
 
 let toastTimer = 0;
@@ -262,6 +413,10 @@ function goTo(pose: Pose, ms: number) {
 }
 
 function setMode(mode: Mode, ms = 600) {
+  if (mode === "tee" && state.ball) {
+    state.ball = null;
+    suggestAndUpdate();
+  }
   state.mode = mode;
   const pose = poseFor(mode);
   if (pose) goTo(pose, ms);
@@ -320,10 +475,20 @@ const endPointer = (e: PointerEvent) => {
   if (!swipe || swipe.id !== e.pointerId) return;
   const dx = e.clientX - swipe.x;
   const dy = e.clientY - swipe.y;
-  const fast = performance.now() - swipe.t < 300;
+  const dt = performance.now() - swipe.t;
   swipe = null;
-  if (fast && Math.abs(dx) > 60 && Math.abs(dy) < Math.abs(dx) * Math.tan(Math.PI / 6)) step(dx < 0 ? 1 : -1);
+  if (dt < 300 && Math.abs(dx) > 60 && Math.abs(dy) < Math.abs(dx) * Math.tan(Math.PI / 6)) step(dx < 0 ? 1 : -1);
+  else if (e.type === "pointerup" && dt < 350 && Math.hypot(dx, dy) < 8 && state.book) hitFrom(e.clientX, e.clientY);
 };
+
+/** Yardage book: tap the ground to play the next shot from there. */
+function hitFrom(x: number, y: number) {
+  const ndc = new THREE.Vector2((x / window.innerWidth) * 2 - 1, -(y / window.innerHeight) * 2 + 1);
+  const p = state.scene?.pick(ndc, camera);
+  if (!p) return;
+  state.ball = p;
+  suggestAndUpdate();
+}
 renderer.domElement.addEventListener("pointerup", endPointer);
 renderer.domElement.addEventListener("pointercancel", endPointer);
 
@@ -340,20 +505,94 @@ const closeSheet = () => (backdrop.hidden = true);
 backdrop.addEventListener("click", (e) => e.target === backdrop && closeSheet());
 window.addEventListener("keydown", (e) => e.key === "Escape" && closeSheet());
 
-function courseSheet() {
+function menuSheet() {
   const rows = state.courses
     .map(
       (c) =>
         `<button class="row${c.slug === state.course?.slug ? " selected" : ""}" data-slug="${c.slug}"><span>${c.name}<br><span class="muted">${c.city ?? ""}</span></span></button>`,
     )
     .join("");
-  openSheet(`<h3>Courses</h3>${rows}`, (body) =>
-    body.querySelectorAll<HTMLButtonElement>("[data-slug]").forEach((b) =>
-      b.addEventListener("click", () => {
-        closeSheet();
-        if (b.dataset.slug !== state.course?.slug) showCourse(b.dataset.slug!);
-      }),
-    ),
+  openSheet(
+    `<h3>Settings</h3>
+    <button class="row" data-book><span>Yardage book<span class="hint">Swipe through your clubs to see where each one lands and misses</span></span><span class="switch${state.book ? " on" : ""}"></span></button>
+    <button class="row" data-clubs><span>My clubs<span class="hint">Carries and miss spread</span></span><span class="muted">›</span></button>
+    <h4>Courses</h4>${rows}`,
+    (body) => {
+      body.querySelector("[data-book]")!.addEventListener("click", (e) => {
+        const sw = (e.currentTarget as HTMLElement).querySelector(".switch")!;
+        sw.classList.toggle("on", !state.book);
+        setBook(!state.book);
+        window.setTimeout(closeSheet, 220);
+      });
+      body.querySelector("[data-clubs]")!.addEventListener("click", clubsSheet);
+      body.querySelectorAll<HTMLButtonElement>("[data-slug]").forEach((b) =>
+        b.addEventListener("click", () => {
+          closeSheet();
+          if (b.dataset.slug !== state.course?.slug) showCourse(b.dataset.slug!);
+        }),
+      );
+    },
+  );
+}
+
+function clubsSheet() {
+  const bag = state.bag;
+  const rows = bag.clubs
+    .map(
+      (c, i) => `<tr data-i="${i}">
+        <td class="${c.enabled ? "" : "off"}"><label><input type="checkbox" data-f="enabled" ${c.enabled ? "checked" : ""}>${c.name}</label></td>
+        <td><input type="number" inputmode="numeric" min="20" max="350" data-f="carry" value="${c.carry}"></td>
+        <td><input type="number" inputmode="numeric" min="1" max="80" data-f="side" value="${c.side}"></td>
+        <td><input type="number" inputmode="numeric" min="1" max="60" data-f="depth" value="${c.depth}"></td>
+      </tr>`,
+    )
+    .join("");
+  const miss = (["left", "straight", "right"] as const)
+    .map((m) => `<button data-miss="${m}" class="${bag.miss === m ? "active" : ""}">${m[0].toUpperCase() + m.slice(1)}</button>`)
+    .join("");
+  openSheet(
+    `<h3>My clubs</h3>
+    <p class="sub">Carry in yards, and how far your misses spread: two out of three shots land inside ± left/right and ± long/short.</p>
+    <h4>Usual miss</h4><div class="segmented">${miss}</div>
+    <h4>Bag</h4>
+    <table class="bag"><tr><th>Club</th><th>Carry</th><th>± L/R</th><th>± Long</th></tr>${rows}</table>
+    <button class="link" data-reset>Reset spreads to typical for each carry</button>`,
+    (body) => {
+      const save = () => {
+        saveBag(bag);
+        if (!bag.clubs[state.club]?.enabled) state.club = enabledClubs()[0]?.i ?? 0;
+        if (state.book) renderClubStrip();
+        updateShot();
+      };
+      body.querySelectorAll<HTMLInputElement>("input").forEach((input) =>
+        input.addEventListener("change", () => {
+          const i = Number(input.closest("tr")!.dataset.i);
+          const club = bag.clubs[i];
+          const f = input.dataset.f as "carry" | "side" | "depth" | "enabled";
+          if (f === "enabled") {
+            club.enabled = input.checked;
+            input.closest("td")!.classList.toggle("off", !input.checked);
+          } else {
+            const v = Number(input.value);
+            if (Number.isFinite(v) && v > 0) club[f] = Math.round(v);
+            input.value = String(club[f]);
+          }
+          save();
+        }),
+      );
+      body.querySelectorAll<HTMLButtonElement>("[data-miss]").forEach((b) =>
+        b.addEventListener("click", () => {
+          bag.miss = b.dataset.miss as Bag["miss"];
+          body.querySelectorAll("[data-miss]").forEach((x) => x.classList.toggle("active", x === b));
+          save();
+        }),
+      );
+      body.querySelector("[data-reset]")!.addEventListener("click", () => {
+        for (const c of bag.clubs) Object.assign(c, defaultSpread(c.carry));
+        save();
+        clubsSheet();
+      });
+    },
   );
 }
 
@@ -372,6 +611,8 @@ function teeSheet() {
         closeSheet();
         state.teeSet = b.dataset.key!;
         if (state.hole && state.scene) state.scene.setTee(teeFor(state.hole));
+        state.ball = null;
+        suggestAndUpdate();
         setMode(state.mode);
       }),
     ),
@@ -433,7 +674,7 @@ function creditsSheet() {
     Trees are placed from OpenStreetMap tree points and wooded areas; their heights are illustrative.</p>`);
 }
 
-$("menu").addEventListener("click", courseSheet);
+$("menu").addEventListener("click", menuSheet);
 $("tee-chip").addEventListener("click", teeSheet);
 $("card").addEventListener("click", infoSheet);
 $("credits").addEventListener("click", creditsSheet);
@@ -455,12 +696,14 @@ async function showHole(number: number, announce = false) {
     state.scene.dispose();
   }
   state.hole = hole;
+  state.grid = grid;
+  state.ball = null;
   state.scene = buildHoleScene(course, hole, grid, resolution, teeFor(hole), state.exag);
   sun.position.copy(state.scene.sunDirection).multiplyScalar(1000);
   scene.add(state.scene.group);
   history.replaceState(null, "", `#${course.slug}/${hole.number}`);
   state.mode = "tee";
-  renderChrome();
+  suggestAndUpdate();
   goTo(teePose(state.scene, hole, teeFor(hole)), 0);
   if (announce) toast(`Hole ${hole.number}${hole.par ? ` · Par ${hole.par}` : ""}`);
 }
@@ -472,6 +715,14 @@ async function showCourse(slug: string, holeNumber = 1) {
   state.teeSet = course.tee_sets[0]?.key ?? "";
   await showHole(holeNumber);
 }
+
+window.addEventListener("hashchange", () => {
+  const [slug, hole] = decodeURIComponent(location.hash.slice(1)).split("/");
+  const n = Number(hole) || 1;
+  if (!state.courses.some((c) => c.slug === slug)) return;
+  if (slug !== state.course?.slug) showCourse(slug, n);
+  else if (n !== state.hole?.number) showHole(n);
+});
 
 const step = (delta: number) => state.hole && showHole(((state.hole.number - 1 + delta + 18) % 18) + 1, true);
 $("prev").addEventListener("click", () => step(-1));
@@ -486,7 +737,7 @@ window.addEventListener("keydown", (e) => {
 
 const tmp = new THREE.Vector3();
 function declutter() {
-  const labels = state.scene?.labels;
+  const labels = state.scene?.labels();
   if (!labels) return;
   const w = window.innerWidth;
   const h = window.innerHeight;
