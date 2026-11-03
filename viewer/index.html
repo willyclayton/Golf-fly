@@ -3,44 +3,63 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#16241a" />
+    <meta name="theme-color" content="#7fb2e0" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
     <title>Golf Fly · course preview</title>
     <link
       rel="icon"
-      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='15' fill='%238cc263'/><path d='M14 6v20' stroke='white' stroke-width='2'/><path d='M14 6l9 4-9 4z' fill='%23e23b3b'/></svg>"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='15' fill='%236fa34a'/><path d='M14 6v20' stroke='white' stroke-width='2'/><path d='M14 6l9 4-9 4z' fill='%23e8413b'/></svg>"
     />
   </head>
   <body>
     <div id="view"></div>
 
-    <header class="bar">
-      <select id="course" aria-label="Course"></select>
-      <div class="holes">
-        <button id="prev" aria-label="Previous hole">‹</button>
-        <span id="hole-name">Hole 1</span>
-        <button id="next" aria-label="Next hole">›</button>
+    <header class="pill">
+      <button id="prev" class="icon" aria-label="Previous hole">
+        <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" /></svg>
+      </button>
+      <div class="title" aria-live="polite">
+        <strong id="hole-num">Hole 1</strong><span id="hole-par"></span><span id="hole-hcp" class="hcp"></span>
       </div>
-      <select id="teeset" aria-label="Tee set"></select>
+      <button id="next" class="icon" aria-label="Next hole">
+        <svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" /></svg>
+      </button>
+      <button id="tee-chip" class="chip" aria-label="Tee set">Back</button>
+      <button id="menu" class="icon" aria-label="Courses">
+        <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" /></svg>
+      </button>
     </header>
 
-    <aside id="card" class="card"></aside>
+    <button id="card" class="card" aria-label="Hole details"></button>
 
-    <footer class="controls">
-      <div class="buttons">
-        <button data-cam="tee">Tee view</button>
-        <button data-cam="top">Top-down</button>
-        <button data-cam="green">Green view</button>
-        <button data-cam="fly">Fly the hole</button>
-        <button data-cam="reset">Reset</button>
+    <nav class="cams" aria-label="Camera">
+      <button data-cam="fly" aria-label="Fly the hole">
+        <svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z" class="solid" /></svg>
+      </button>
+      <div class="segment">
+        <button data-cam="tee" aria-label="Tee view">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.2" class="solid" /><path d="M12 8v7M8 21l4-6 4 6M7.5 11.5l9-2" /></svg>
+        </button>
+        <button data-cam="top" aria-label="Overhead view">
+          <svg viewBox="0 0 24 24"><path d="M3.5 6.5l5.5-2.5 6 2.5 5.5-2.5v13.5L15 20l-6-2.5-5.5 2.5zM9 4v13.5M15 6.5V20" /></svg>
+        </button>
+        <button data-cam="green" aria-label="Green view">
+          <svg viewBox="0 0 24 24"><path d="M7 21V3.5l10 3.8-10 3.8" /><ellipse cx="9" cy="20.5" rx="6" ry="1.5" /></svg>
+        </button>
       </div>
-      <label class="exag">
-        Vertical <input id="exag" type="range" min="1" max="3" step="0.25" value="2" />
-        <span id="exag-value">2x</span>
-      </label>
-      <p id="credits" class="credits"></p>
-    </footer>
+    </nav>
 
+    <button id="credits" class="credits">© OpenStreetMap contributors · ⓘ</button>
+    <div id="toast" class="toast"></div>
     <div id="status" class="status">Loading…</div>
+
+    <div id="sheet-backdrop" class="backdrop" hidden>
+      <section id="sheet" class="sheet" role="dialog" aria-modal="true">
+        <div class="grabber"></div>
+        <div id="sheet-body"></div>
+      </section>
+    </div>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

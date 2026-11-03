@@ -65,7 +65,7 @@ HTTP responses are cached in `pipeline/.cache/http`; pass `--no-cache` for fresh
 
 ## Course preview
 
-`viewer/` is a small Vite + TypeScript + Three.js page that renders built packages: each hole's 1 m terrain with surface colours and 0.5 m contours, the line of play, 100/150/200 marks, hazard reach/carry labels, a yardage card, tee set switcher, vertical exaggeration (1x to 3x), and Tee / Top-down / Green / Fly the hole cameras. It ships with Jackson Park (Cook lidar), Maple Meadows (DuPage) and Settler's Hill (3DEP).
+`viewer/` is a small, phone-first Vite + TypeScript + Three.js page that renders built packages. Each hole shows its 1 m lidar terrain painted with mown surfaces (fairway stripes, collars, fringes, bunker lips, shaded water), trees planted from OSM tree points and wooded areas, and contours that are dense on the green and faint elsewhere. On top sit the line of play, 100/150/200 ticks, up to four hazard carry labels (decluttered on screen), and a yardage card with centre, front and back and plays-like distance. Tee, overhead and green cameras frame the hole to the screen, and Fly the hole animates tee to green. Swipe sideways to change hole; tap the card for hole details and terrain height, the tee chip for tee sets, and ⋯ for courses. It ships with Jackson Park (Cook lidar), Maple Meadows (DuPage) and Settler's Hill (3DEP).
 
 It's published to GitHub Pages by the **Viewer** workflow on every push to `viewer/` (one-time setup: Settings → Pages → Source: **GitHub Actions**). To run it locally:
 
