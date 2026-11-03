@@ -86,6 +86,8 @@ export interface HoleScene {
   setTrail(points: XY[]): void;
   /** The player's GPS position and its accuracy radius, or null. */
   setMe(me: { p: XY; accM: number } | null): void;
+  /** Recompute hazard yardages from where the ball is now (tee when null). */
+  setFrom(ball: XY | null): void;
   /** Local point on the terrain under a screen position in normalised device coordinates. */
   pick(ndc: THREE.Vector2, camera: THREE.Camera): XY | null;
   setResolution(width: number, height: number): void;
@@ -494,6 +496,7 @@ export function buildHoleScene(
   const features = new Map(course.features.map((f) => [f.id, f]));
   let exag = initialExag;
   let tee = initialTee;
+  let from: XY = initialTee.point;
   const labels: SceneLabel[] = [];
   const shotLabels: SceneLabel[] = [];
   const lineMats: LineMaterial[] = [];
@@ -753,20 +756,23 @@ export function buildHoleScene(
       addLabel(`${m.yd}`, "mark", ground(m.point, 2.5), 1);
     }
 
-    // At most four hazards: those around the landing zone first, then greenside ones.
+    // At most four hazards ahead of the ball, labeled with yards from where you are.
+    const toGreen = Math.hypot(hole.green.middle[0] - from[0], hole.green.middle[1] - from[1]) / 0.9144;
     const ranked = tee.hazards
-      .filter((h) => h.reach_yd <= tee.length_yd)
       .map((h) => {
-        const landing = !h.greenside && (hole.par ?? 4) >= 4 && h.carry_yd >= 150 && h.reach_yd <= 300;
-        return { h, score: landing ? 0 : h.greenside ? 2 : 3 };
+        const f = features.get(h.feature);
+        const c = f && centroid(f.geometry);
+        if (!c) return null;
+        const yd = Math.hypot(c[0] - from[0], c[1] - from[1]) / 0.9144;
+        if (yd < 20 || yd > toGreen + 20) return null;
+        const landing = !h.greenside && yd >= 120 && yd <= 260;
+        return { h, c, yd, score: landing ? 0 : h.greenside ? 2 : 3 };
       })
-      .sort((a, b) => a.score - b.score || a.h.reach_yd - b.h.reach_yd)
+      .filter((x): x is NonNullable<typeof x> => !!x)
+      .sort((a, b) => a.score - b.score || a.yd - b.yd)
       .slice(0, 4);
-    for (const { h, score } of ranked) {
-      const f = features.get(h.feature);
-      const c = f && centroid(f.geometry);
-      // Greenside carries run to the green itself, so show how far it is to reach them instead.
-      if (c) addLabel(`${Math.round(h.greenside ? h.reach_yd : h.carry_yd)}`, `hazard ${h.kind}`, ground(c, 2), score);
+    for (const { h, c, yd, score } of ranked) {
+      addLabel(`${Math.round(yd)}`, `hazard ${h.kind}`, ground(c, 2), score);
     }
   };
 
@@ -790,6 +796,13 @@ export function buildHoleScene(
     setExaggeration,
     setTee(t: Tee) {
       tee = t;
+      from = t.point;
+      rebuildOverlays();
+    },
+    setFrom(ball: XY | null) {
+      const next = ball ?? tee.point;
+      if (Math.hypot(next[0] - from[0], next[1] - from[1]) < 0.5) return;
+      from = next;
       rebuildOverlays();
     },
     setShot(plan: ShotPlan | null) {

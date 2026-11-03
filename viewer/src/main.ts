@@ -14,15 +14,14 @@ import {
 } from "./course";
 import { buildHoleScene, type HoleScene } from "./hole";
 import {
-  clubFor,
+  adviseClub,
   defaultSpread,
   dropBetween,
   loadBag,
+  missLine,
   planShot,
   playsLikeYd,
   saveBag,
-  suggestClub,
-  SURFACE_LABELS,
   yardsBetween,
   type Bag,
   type ShotPlan,
@@ -108,7 +107,7 @@ const state: State = {
   mode: "tee",
   animation: null,
   grid: null,
-  book: localStorage.getItem(BOOK_KEY) === "1",
+  book: localStorage.getItem(BOOK_KEY) !== "0",
   bag: loadBag(),
   club: 0,
   trail: [],
@@ -140,13 +139,61 @@ function teeFor(hole: Hole, setKey = state.teeSet): Tee {
 
 const playsLike = (tee: Tee) => Math.round(tee.middle_yd + tee.elev_change_ft / 3);
 
+/** Front / middle / back of the green from where the ball is now. */
+function greenYards(ball: XY, hole: Hole, tee: Tee): { f: number; m: number; b: number; plays: number } {
+  const fromTee = onTee() && !gpsLive();
+  if (fromTee) return { f: tee.front_yd, m: tee.middle_yd, b: tee.back_yd, plays: playsLike(tee) };
+  const g = hole.green;
+  const m = yardsBetween(ball, g.middle);
+  return {
+    f: yardsBetween(ball, g.front),
+    m,
+    b: yardsBetween(ball, g.back),
+    plays: state.grid ? playsLikeYd(state.grid, ball, g.middle) : m,
+  };
+}
+
+/** The next one or two hazards on the way, with yards from the ball. */
+function hazardsAhead(ball: XY, hole: Hole, tee: Tee): { kind: string; yd: number }[] {
+  const features = new Map(state.course?.features.map((f) => [f.id, f]) ?? []);
+  const toGreen = yardsBetween(ball, hole.green.middle);
+  const out: { kind: string; yd: number; greenside: boolean }[] = [];
+  for (const h of tee.hazards) {
+    const f = features.get(h.feature);
+    if (!f || f.geometry.type === "Point" || f.geometry.type === "LineString") continue;
+    const ring = f.geometry.type === "Polygon" ? f.geometry.coordinates[0] : f.geometry.coordinates[0][0];
+    if (!ring?.length) continue;
+    let cx = 0;
+    let cy = 0;
+    for (const [x, y] of ring) {
+      cx += x;
+      cy += y;
+    }
+    cx /= ring.length;
+    cy /= ring.length;
+    const yd = yardsBetween(ball, [cx, cy]);
+    if (yd < 15 || yd > toGreen + 15) continue;
+    out.push({ kind: h.kind, yd, greenside: h.greenside });
+  }
+  return out
+    .sort((a, b) => Number(a.greenside) - Number(b.greenside) || a.yd - b.yd)
+    .filter((h, i, arr) => i === arr.findIndex((x) => x.kind === h.kind && Math.abs(x.yd - h.yd) < 12))
+    .slice(0, 2)
+    .map(({ kind, yd }) => ({ kind, yd }));
+}
+
+function fmbRow(g: { f: number; m: number; b: number; plays: number }) {
+  const plays = Math.abs(g.plays - g.m) >= 2 ? `<span class="plays">Plays ${Math.round(g.plays)}</span>` : "";
+  return `<div class="fmb"><span>F ${Math.round(g.f)}</span><span class="mid">${Math.round(g.m)}</span><span>B ${Math.round(g.b)}</span>${plays}</div>`;
+}
+
 function renderChrome() {
   const { course, hole } = state;
   if (!course || !hole) return;
   const tee = teeFor(hole);
   $("hole-num").textContent = `Hole ${hole.number}`;
   $("hole-par").textContent = hole.par ? ` · Par ${hole.par}` : "";
-  $("hole-hcp").textContent = hole.handicap ? `Hcp ${hole.handicap}` : "";
+  $("hole-hcp").textContent = "";
   $("tee-chip").textContent = course.tee_sets.find((s) => s.key === state.teeSet)?.label ?? "Tee";
   document.body.classList.toggle("book", state.book);
   $("clubs").hidden = !state.book;
@@ -155,55 +202,63 @@ function renderChrome() {
   const live = gpsLive();
   card.classList.toggle("stale", live && state.gps!.accM > 9);
   const ball = ballPoint()!;
+  const green = greenYards(ball, hole, tee);
+  const hazards = hazardsAhead(ball, hole, tee)
+    .map((h) => `<span class="hz ${h.kind}">${h.kind === "water" ? "Water" : "Bunker"} ${Math.round(h.yd)}</span>`)
+    .join("");
   const where = live
-    ? `<div class="from"><span class="gps-dot"></span>From you · ±${Math.round(state.gps!.accM / 0.9144)} yd</div>`
+    ? `<div class="from"><span class="gps-dot"></span>GPS ±${Math.round(state.gps!.accM / 0.9144)} yd</div>`
     : state.trail.length
-      ? `<div class="from">Shot ${state.trail.length + 1} · from where the last one finished</div>`
+      ? `<div class="from">Shot ${state.trail.length + 1}</div>`
       : "";
   const canHit = !live && (state.plan || state.target);
   const actions = [
-    canHit ? `<button data-act="hit">Hit</button>` : "",
+    canHit ? `<button data-act="hit">Play it</button>` : "",
     !live && state.trail.length ? `<button data-act="undo">Undo</button>` : "",
     state.target ? `<button data-act="clear" aria-label="Clear target">✕</button>` : "",
   ].join("");
   const actionRow = actions ? `<div class="actions">${actions}</div>` : "";
-  const leavesText = (yd: number) => (yd > 12 ? `${Math.round(yd)} to centre` : "Pin high");
-  const playsText = (dist: number, plays: number) =>
-    Math.abs(plays - dist) >= 2 ? `<span class="plays">Plays ${Math.round(plays)}</span> · ` : "";
 
   if (state.book && state.plan) {
     const p = state.plan;
-    const mix = p.mix
-      .slice(0, 4)
-      .map((m) => `<span style="--dot:${SURFACE_DOT[m.surface]}">${SURFACE_LABELS[m.surface]} ${m.pct}%</span>`)
-      .join("");
+    const hero = state.target ? Math.round(p.playsYd) : Math.round(p.carryYd);
+    const heroNote = state.target
+      ? Math.abs(p.playsYd - p.distYd) >= 2
+        ? `plays · ${Math.round(p.distYd)} yd`
+        : "to target"
+      : p.leavesYd > 12
+        ? `carry · ${Math.round(p.leavesYd)} left`
+        : "carry · pin high";
+    const advice = missLine(p, state.bag.miss);
+    const top = p.mix[0];
     card.innerHTML = `
-      <div class="club-name">${p.club.name} · ${Math.round(p.carryYd)} carry</div>
-      <div class="big">${Math.round(p.distYd)}<small> ${state.target ? "to target" : "yd"}</small></div>
-      <div class="leaves">${playsText(p.distYd, p.playsYd)}${leavesText(p.leavesYd)}</div>
-      <div class="mix">${mix}</div>
+      <div class="hit-club">Hit <b>${p.club.name}</b></div>
+      <div class="big">${hero}<small>${heroNote}</small></div>
+      <div class="miss-line" style="--dot:${top ? SURFACE_DOT[top.surface] : "#fff"}">${advice}</div>
+      ${fmbRow(green)}
+      ${hazards ? `<div class="hazards">${hazards}</div>` : ""}
       ${where}${actionRow}`;
   } else if (state.target && state.grid) {
     const dist = yardsBetween(ball, state.target);
     const plays = playsLikeYd(state.grid, ball, state.target);
+    const left = yardsBetween(state.target, hole.green.middle);
     card.innerHTML = `
       <div class="eyebrow">Target</div>
-      <div class="big">${Math.round(dist)}</div>
-      <div class="leaves">${playsText(dist, plays)}${leavesText(yardsBetween(state.target, hole.green.middle))}</div>
+      <div class="big">${Math.round(Math.abs(plays - dist) >= 2 ? plays : dist)}<small>${
+        Math.abs(plays - dist) >= 2 ? `plays · ${Math.round(dist)} yd` : "yd"
+      }</small></div>
+      <div class="leaves">${left > 12 ? `${Math.round(left)} to centre` : "Pin high"}</div>
+      ${fmbRow(green)}
+      ${hazards ? `<div class="hazards">${hazards}</div>` : ""}
       ${where}${actionRow}`;
   } else {
-    const fromTee = !live && !state.trail.length;
-    const g = hole.green;
-    const [f, m, b] = fromTee
-      ? [tee.front_yd, tee.middle_yd, tee.back_yd]
-      : [yardsBetween(ball, g.front), yardsBetween(ball, g.middle), yardsBetween(ball, g.back)];
-    const plays = fromTee ? playsLike(tee) : state.grid ? Math.round(playsLikeYd(state.grid, ball, g.middle)) : Math.round(m);
-    const playsRow = Math.abs(plays - m) >= 1.5 ? `<div class="plays">Plays ${plays}</div>` : "";
     card.innerHTML = `
-      <div class="eyebrow">Centre</div>
-      <div class="big">${Math.round(m)}</div>
-      <div class="fb">F ${Math.round(f)} · B ${Math.round(b)}</div>
-      ${playsRow}
+      <div class="eyebrow">Green</div>
+      <div class="big">${Math.round(Math.abs(green.plays - green.m) >= 2 ? green.plays : green.m)}<small>${
+        Math.abs(green.plays - green.m) >= 2 ? `plays · ${Math.round(green.m)} yd` : "to centre"
+      }</small></div>
+      ${fmbRow(green)}
+      ${hazards ? `<div class="hazards">${hazards}</div>` : ""}
       ${where}${actionRow}`;
   }
   document.querySelectorAll<HTMLButtonElement>("[data-cam]").forEach((b) => b.classList.toggle("active", b.dataset.cam === state.mode));
@@ -289,6 +344,7 @@ function updateShot(samples?: number) {
   if (!course || !hole || !grid || !hs) return;
   const club = state.bag.clubs[state.club];
   const ball = ballPoint()!;
+  hs.setFrom(onTee() && !gpsLive() ? null : ball);
   state.plan = state.book && club?.enabled ? planShot(course, hole, teeFor(hole), grid, ball, club, state.bag.miss, state.target, samples) : null;
   hs.setShot(state.plan);
   const aim = state.plan?.aim ?? state.target;
@@ -301,27 +357,61 @@ function updateShot(samples?: number) {
 
 /** Pick the club for the current ball position and redraw. */
 function suggestAndUpdate() {
-  const { hole, grid } = state;
-  if (!hole) return;
-  const ball = ballPoint()!;
-  const toGreen = grid ? playsLikeYd(grid, ball, hole.green.middle) : yardsBetween(ball, hole.green.middle);
-  state.club = suggestClub(state.bag, toGreen, onTee(), hole.par);
-  if (state.book) renderClubStrip();
+  const { course, hole, grid } = state;
+  if (!course || !hole || !grid) return;
+  if (state.book) {
+    const advice = adviseClub(course, hole, teeFor(hole), grid, ballPoint()!, state.bag, state.bag.miss, state.target, onTee());
+    state.club = advice.index;
+    state.plan = advice.plan;
+    renderClubStrip();
+    const hs = state.scene;
+    if (hs) {
+      hs.setFrom(onTee() && !gpsLive() ? null : advice.plan.ball);
+      hs.setShot(state.plan);
+      hs.setAim({
+        ball: state.plan.ball,
+        target: state.plan.aim,
+        distYd: state.plan.distYd,
+        leavesYd: state.plan.leavesYd,
+        flight: true,
+      });
+      hs.setTrail(gpsLive() || !state.trail.length ? [] : [teeFor(hole).point, ...state.trail]);
+    }
+    renderChrome();
+    return;
+  }
   state.plan = null;
   updateShot();
 }
 
-/** Move the target, and in the yardage book pick the club that plays closest to it. */
+/** Move the target. Full club advice runs when the drag ends; mid-drag keeps the current club. */
 function aimAt(p: XY, samples?: number) {
-  const { grid } = state;
+  const { course, hole, grid } = state;
   state.target = p;
-  if (state.book && grid) {
-    const i = clubFor(state.bag, playsLikeYd(grid, ballPoint()!, p), onTee());
-    if (i !== state.club) {
-      state.club = i;
-      clubTrack.querySelectorAll<HTMLElement>("[data-club]").forEach((b) => b.classList.toggle("active", Number(b.dataset.club) === i));
-      centerActiveClub("auto");
+  if (state.book && course && hole && grid) {
+    const dragging = samples !== undefined && samples < 200;
+    if (dragging) {
+      const club = state.bag.clubs[state.club];
+      state.plan = planShot(course, hole, teeFor(hole), grid, ballPoint()!, club, state.bag.miss, p, samples);
+    } else {
+      const advice = adviseClub(course, hole, teeFor(hole), grid, ballPoint()!, state.bag, state.bag.miss, p, onTee());
+      state.club = advice.index;
+      state.plan = advice.plan;
+      renderClubStrip();
     }
+    const hs = state.scene;
+    if (hs && state.plan) {
+      hs.setShot(state.plan);
+      hs.setAim({
+        ball: state.plan.ball,
+        target: state.plan.aim,
+        distYd: state.plan.distYd,
+        leavesYd: state.plan.leavesYd,
+        flight: true,
+      });
+    }
+    renderChrome();
+    return;
   }
   updateShot(samples);
 }
@@ -669,8 +759,8 @@ function menuSheet() {
     .join("");
   openSheet(
     `<h3>Settings</h3>
-    <button class="row" data-book><span>Yardage book<span class="hint">Swipe clubs to see where each one lands and misses</span></span><span class="switch${state.book ? " on" : ""}"></span></button>
-    <button class="row" data-clubs><span>My clubs<span class="hint">Carries and miss spread</span></span><span class="muted">›</span></button>
+    <button class="row" data-book><span>My book<span class="hint">Club advice and likely miss for every shot</span></span><span class="switch${state.book ? " on" : ""}"></span></button>
+    <button class="row" data-clubs><span>My bag<span class="hint">Your carries, miss spread and usual miss</span></span><span class="muted">›</span></button>
     <button class="row" data-score><span>Scorecard<span class="hint">${roundHere() ? "Round in progress" : "Start a round or see past scores"}</span></span><span class="muted">›</span></button>
     <button class="row" data-gps><span>Live GPS<span class="hint">Yardages from where you are on the course</span></span><span class="switch${state.gpsOn ? " on" : ""}"></span></button>
     <h4>Courses</h4>${rows}`,
@@ -713,10 +803,10 @@ function clubsSheet() {
     .map((m) => `<button data-miss="${m}" class="${bag.miss === m ? "active" : ""}">${m[0].toUpperCase() + m.slice(1)}</button>`)
     .join("");
   openSheet(
-    `<h3>My clubs</h3>
-    <p class="sub">Carry in yards, and how far your misses spread: two out of three shots land inside ± left/right and ± long/short.</p>
+    `<h3>My bag</h3>
+    <p class="sub">Your carries power the book. Two out of three shots land inside ± left/right and ± long/short.</p>
     <h4>Usual miss</h4><div class="segmented">${miss}</div>
-    <h4>Bag</h4>
+    <h4>Clubs</h4>
     <table class="bag"><tr><th>Club</th><th>Carry</th><th>± L/R</th><th>± Long</th></tr>${rows}</table>
     <button class="link" data-reset>Reset spreads to typical for each carry</button>`,
     (body) => {

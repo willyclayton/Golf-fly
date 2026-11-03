@@ -322,6 +322,38 @@ export function planShot(
   };
 }
 
+const GOOD: Surface[] = ["fairway", "green"];
+const TROUBLE: Surface[] = ["water", "off", "trees", "sand"];
+
+const pctOf = (mix: ShotPlan["mix"], surfaces: Surface[]) =>
+  mix.filter((m) => surfaces.includes(m.surface)).reduce((s, m) => s + m.pct, 0);
+
+/** How safe a landing mix is: reward fairway/green, punish water and OB hardest. */
+export function safetyScore(mix: ShotPlan["mix"]): number {
+  return pctOf(mix, ["fairway"]) + pctOf(mix, ["green"]) * 1.2 - pctOf(mix, ["water"]) * 3 - pctOf(mix, ["off"]) * 3 - pctOf(mix, ["trees"]) * 1.8 - pctOf(mix, ["sand"]) * 1.2;
+}
+
+/** One line: where the ball usually finishes, and where the miss finds trouble. */
+export function missLine(plan: ShotPlan, miss: Miss): string {
+  const top = plan.mix[0];
+  const good = pctOf(plan.mix, GOOD);
+  const trouble = plan.mix.find((m) => TROUBLE.includes(m.surface) && m.pct >= 8);
+  const side = miss === "left" ? "left" : miss === "right" ? "right" : null;
+  const name = (s: Surface) => SURFACE_LABELS[s].toLowerCase();
+  if (!top) return side ? `Your miss is ${side}` : "Dial in your miss in My bag";
+  if (good >= 55 || (top.surface === "green" && top.pct >= 45)) {
+    const land = name(GOOD.find((s) => plan.mix.some((m) => m.surface === s && m.pct >= 20)) ?? top.surface);
+    const rough = plan.mix.find((m) => m.surface === "rough" && m.pct >= 15);
+    if (trouble) return `Mostly ${land} · miss finds ${name(trouble.surface)} (${trouble.pct}%)`;
+    if (rough && land === "green") return `Mostly green · miss finds rough (${rough.pct}%)`;
+    if (side && top.pct < 85) return `Mostly ${land} · miss tends ${side}`;
+    return `Mostly ${land} (${top.pct}%)`;
+  }
+  if (trouble && trouble.pct >= 18) return `Likely ${name(trouble.surface)} (${trouble.pct}%)`;
+  const second = plan.mix[1];
+  return second ? `${name(top.surface)} ${top.pct}% · ${name(second.surface)} ${second.pct}%` : `${name(top.surface)} ${top.pct}%`;
+}
+
 /** The enabled club whose carry is closest to a plays-like distance; drivers only off the tee. */
 export function clubFor(bag: Bag, playsYd: number, fromTee: boolean): number {
   return suggestClub(bag, playsYd, fromTee, 3);
@@ -339,4 +371,64 @@ export function suggestClub(bag: Bag, toGreenYd: number, fromTee: boolean, par: 
     return pick.reduce((a, b) => (b.c.carry > a.c.carry ? b : a)).i;
   }
   return clubs.reduce((a, b) => (Math.abs(b.c.carry - toGreenYd) < Math.abs(a.c.carry - toGreenYd) ? b : a)).i;
+}
+
+/**
+ * Pick a club for the shot ahead: close to the plays-like number, then the one whose
+ * misses stay on fairway/green and out of water, trees and OB.
+ */
+export function adviseClub(
+  course: Course,
+  hole: Hole,
+  tee: Tee,
+  grid: HeightGrid,
+  ball: XY,
+  bag: Bag,
+  miss: Miss,
+  target: XY | null,
+  fromTee: boolean,
+): { index: number; plan: ShotPlan } {
+  const goal = target ? playsLikeYd(grid, ball, target) : playsLikeYd(grid, ball, hole.green.middle);
+  const seed = suggestClub(bag, goal, fromTee, hole.par);
+  const all = bag.clubs.map((c, i) => ({ c, i })).filter(({ c }) => c.enabled);
+  const offDeck = all.filter(({ c }) => !/driver/i.test(c.name));
+  const pool = fromTee || !offDeck.length ? all : offDeck;
+  // Tee shot on a long hole: try the longest few that still leave a wedge; else try clubs near the goal.
+  const candidates = (() => {
+    if (fromTee && (hole.par ?? 4) >= 4 && !target) {
+      const fitting = pool.filter(({ c }) => c.carry <= goal - 25);
+      const base = (fitting.length ? fitting : pool).sort((a, b) => b.c.carry - a.c.carry).slice(0, 4);
+      return base;
+    }
+    return pool
+      .map((x) => ({ ...x, d: Math.abs(x.c.carry - goal) }))
+      .filter((x) => x.d <= 25 || x.i === seed)
+      .sort((a, b) => a.d - b.d)
+      .slice(0, 5);
+  })();
+  const scored = candidates.map(({ c, i }) => {
+    const plan = planShot(course, hole, tee, grid, ball, c, miss, target, 120);
+    return { index: i, plan, carry: c.carry, safety: safetyScore(plan.mix) };
+  });
+  let best = scored[0] ?? {
+    index: seed,
+    plan: planShot(course, hole, tee, grid, ball, bag.clubs[seed], miss, target, 120),
+    carry: bag.clubs[seed].carry,
+    safety: 0,
+  };
+  if (fromTee && !target && (hole.par ?? 4) >= 4) {
+    // Off the tee, take the longest club that isn't clearly more reckless than a shorter one.
+    const safest = Math.max(...scored.map((s) => s.safety));
+    best = scored.filter((s) => s.safety >= safest - 18).sort((a, b) => b.carry - a.carry)[0] ?? best;
+  } else {
+    for (const s of scored) {
+      const fit = 1 - Math.min(Math.abs(s.carry - goal) / 30, 1);
+      const score = s.safety + fit * 30;
+      const bestFit = 1 - Math.min(Math.abs(best.carry - goal) / 30, 1);
+      if (score > best.safety + bestFit * 30) best = s;
+    }
+  }
+  // Full sample count for the winner so the scatter matches the advice.
+  const plan = planShot(course, hole, tee, grid, ball, bag.clubs[best.index], miss, target);
+  return { index: best.index, plan };
 }

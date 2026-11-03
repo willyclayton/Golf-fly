@@ -40,22 +40,17 @@
 
     <nav class="cams" aria-label="Camera">
       <button id="gps" aria-label="Use my location">
-        <svg viewBox="0 0 24 24"><path d="M20 4L4 11l7 2 2 7z" /></svg>
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /></svg>
       </button>
-      <button data-cam="fly" aria-label="Fly the hole">
-        <svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z" class="solid" /></svg>
+      <button data-cam="tee" aria-label="Tee view">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.2" class="solid" /><path d="M12 8v7M8 21l4-6 4 6M7.5 11.5l9-2" /></svg>
       </button>
-      <div class="segment">
-        <button data-cam="tee" aria-label="Tee view">
-          <svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.2" class="solid" /><path d="M12 8v7M8 21l4-6 4 6M7.5 11.5l9-2" /></svg>
-        </button>
-        <button data-cam="top" aria-label="Overhead view">
-          <svg viewBox="0 0 24 24"><path d="M3.5 6.5l5.5-2.5 6 2.5 5.5-2.5v13.5L15 20l-6-2.5-5.5 2.5zM9 4v13.5M15 6.5V20" /></svg>
-        </button>
-        <button data-cam="green" aria-label="Green view">
-          <svg viewBox="0 0 24 24"><path d="M7 21V3.5l10 3.8-10 3.8" /><ellipse cx="9" cy="20.5" rx="6" ry="1.5" /></svg>
-        </button>
-      </div>
+      <button data-cam="top" aria-label="Overhead view">
+        <svg viewBox="0 0 24 24"><path d="M3.5 6.5l5.5-2.5 6 2.5 5.5-2.5v13.5L15 20l-6-2.5-5.5 2.5zM9 4v13.5M15 6.5V20" /></svg>
+      </button>
+      <button data-cam="green" aria-label="Green view">
+        <svg viewBox="0 0 24 24"><path d="M7 21V3.5l10 3.8-10 3.8" /><ellipse cx="9" cy="20.5" rx="6" ry="1.5" /></svg>
+      </button>
     </nav>
 
     <button id="credits" class="credits">© OpenStreetMap contributors · ⓘ</button>
