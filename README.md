@@ -42,7 +42,7 @@ python -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'
 pytest                                       # offline tests on a synthetic course
 python -m golffly survey                     # needs internet access
-python -m golffly audit "George W. Dunne National"
+python -m golffly audit "George W. Dunne National Golf Course"
 python -m golffly build way/123456 --out ../out/courses
 ```
 

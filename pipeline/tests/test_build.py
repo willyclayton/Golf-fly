@@ -130,6 +130,16 @@ def test_build_refuses_a_course_that_fails_the_audit(tmp_path, monkeypatch):
     assert not (tmp_path / "synthetic-links").exists()
 
 
+def test_cli_audit_fails_when_a_course_is_not_found(tmp_path, monkeypatch):
+    monkeypatch.setattr(locate, "run_query", overpass_stub(make_course()))
+    assert cli.main(["--no-cache", "audit", SPEC, "--out", str(tmp_path / "ok")]) == 0
+    code = cli.main(["--no-cache", "audit", f"{SPEC};way/987654321", "--out", str(tmp_path / "missing")])
+    assert code == 1
+    doc = json.loads((tmp_path / "missing" / "audit.json").read_text())
+    assert [c["id"] for c in doc["courses"]] == [SPEC]
+    assert len(doc["errors"]) == 1
+
+
 def test_cli_build_with_scorecard(tmp_path, monkeypatch):
     monkeypatch.setattr(locate, "run_query", overpass_stub(make_course()))
     server = FakeImageServer()

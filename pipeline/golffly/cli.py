@@ -85,7 +85,7 @@ def cmd_audit(args, http: Http) -> int:
     _summary(md)
     for a in audits:
         print(f"{a.status.upper():8s} {a.holes_ok:2d}/18  {a.name}  ({a.id})")
-    return 0
+    return 1 if errors else 0
 
 
 def cmd_build(args, http: Http) -> int:
