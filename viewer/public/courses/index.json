@@ -20,6 +20,13 @@
       "city": null,
       "elevation": "USGS 3DEP lidar DEM (best available)",
       "confidence": "Low"
+    },
+    {
+      "slug": "sugar-hill-golf-club",
+      "name": "Sugar Hill Golf Club",
+      "city": "Sugar Hill",
+      "elevation": "USGS 3DEP lidar DEM (best available)",
+      "confidence": "Low"
     }
   ]
 }
