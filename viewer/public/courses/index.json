@@ -1,0 +1,25 @@
+{
+  "courses": [
+    {
+      "slug": "jackson-park-golf-course",
+      "name": "Jackson Park Golf Course",
+      "city": "Chicago",
+      "elevation": "ISGS Cook County 2022 lidar DTM",
+      "confidence": "High"
+    },
+    {
+      "slug": "maple-meadows-golf-club",
+      "name": "Maple Meadows Golf Club",
+      "city": null,
+      "elevation": "ISGS DuPage County 2022 lidar DTM",
+      "confidence": "Medium"
+    },
+    {
+      "slug": "settler-s-hill-golf-course",
+      "name": "Settler's Hill Golf Course",
+      "city": null,
+      "elevation": "USGS 3DEP lidar DEM (best available)",
+      "confidence": "Low"
+    }
+  ]
+}

@@ -10,6 +10,7 @@ The spec builds in four phases, starting with the data, because coverage decides
 | --- | --- |
 | Course pipeline: find, audit, elevation, terrain grids, yardages, package | Built, tested on a synthetic course |
 | Regional coverage survey (which Chicago courses OSM can build) | Built; run it from Actions |
+| Course preview in the browser (`viewer/`): 3D hole terrain, surfaces, yardages | Built, a preview of the packages rather than the phase 2 app |
 | 3D hole view, greens, overlays, on-course mode, booklet, accounts | Not started |
 
 ## Course pipeline
@@ -61,6 +62,19 @@ HTTP responses are cached in `pipeline/.cache/http`; pass `--no-cache` for fresh
 - Each grid is rotated to its hole: the u axis points down the line of play. `pipeline/golffly/terrain.py` documents the grid layout and the `u16-delta-shuffle-gzip` height encoding.
 - Tees tagged with a colour or name in OSM form named tee sets. Otherwise tees are ranked by length and labelled Back, Middle and Forward.
 - Each green carries a confidence badge from its lidar source (High: Cook QL1, Medium: DuPage QL2+, Low: 3DEP QL2) and the lidar year.
+
+## Course preview
+
+`viewer/` is a small Vite + TypeScript + Three.js page that renders built packages: each hole's 1 m terrain with surface colours and 0.5 m contours, the line of play, 100/150/200 marks, hazard reach/carry labels, a yardage card, tee set switcher, vertical exaggeration (1x to 3x), and Tee / Top-down / Green / Fly the hole cameras. It ships with Jackson Park (Cook lidar), Maple Meadows (DuPage) and Settler's Hill (3DEP).
+
+It's published to GitHub Pages by the **Viewer** workflow on every push to `viewer/` (one-time setup: Settings → Pages → Source: **GitHub Actions**). To run it locally:
+
+```sh
+cd viewer
+npm install
+npm run courses     # copy packages from ../out/courses into public/courses
+npm run dev         # http://localhost:5173
+```
 
 ## Data and credits
 

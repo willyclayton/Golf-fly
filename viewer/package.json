@@ -1,0 +1,21 @@
+{
+  "name": "golf-fly-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser preview of Golf Fly course packages: 3D hole terrain, surfaces and yardages.",
+  "type": "module",
+  "scripts": {
+    "courses": "node scripts/sync-courses.mjs",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.187.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  }
+}

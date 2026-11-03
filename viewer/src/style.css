@@ -1,0 +1,294 @@
+:root {
+  --ink: #f4f7f1;
+  --panel: rgba(18, 32, 22, 0.86);
+  --line: rgba(255, 255, 255, 0.14);
+  --accent: #ffd23f;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #16241a;
+}
+
+#view {
+  position: fixed;
+  inset: 0;
+}
+
+#view canvas {
+  display: block;
+  touch-action: none;
+}
+
+button,
+select {
+  font: inherit;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+button:hover,
+select:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1b1b1b;
+}
+
+select option {
+  color: #111;
+}
+
+.bar {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  left: 12px;
+  right: 12px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  backdrop-filter: blur(8px);
+}
+
+.bar #course {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.holes {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.holes span {
+  min-width: 70px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.holes button {
+  width: 40px;
+  padding: 6px 0;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.card {
+  position: fixed;
+  top: 92px;
+  left: 12px;
+  width: min(300px, calc(100vw - 24px));
+  padding: 14px 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  backdrop-filter: blur(8px);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.card h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  opacity: 0.8;
+}
+
+.card .yards {
+  font-size: 40px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.card .yards small {
+  font-size: 16px;
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.card dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  margin: 10px 0 0;
+}
+
+.card dt {
+  opacity: 0.65;
+}
+
+.card dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.card ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.badge {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.badge.High {
+  background: #3fa34d;
+}
+.badge.Medium {
+  background: #c98b1e;
+}
+.badge.Low {
+  background: #b5452f;
+}
+
+.controls {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  backdrop-filter: blur(8px);
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.exag {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.credits {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 11px;
+  opacity: 0.65;
+}
+
+.status {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 10px 16px;
+  background: var(--panel);
+  border-radius: 10px;
+  pointer-events: none;
+}
+
+.status:empty {
+  display: none;
+}
+
+.label {
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  pointer-events: none;
+  color: #111;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.label.mark {
+  background: var(--accent);
+}
+
+.label.tee {
+  background: #fff;
+  font-size: 13px;
+}
+
+.label.hazard.water {
+  background: #bfe0f7;
+}
+
+.label.hazard.bunker {
+  background: #f3e8c7;
+}
+
+@media (max-width: 640px) {
+  .bar {
+    gap: 8px;
+    padding: 8px;
+  }
+  .bar #course {
+    flex-basis: 100%;
+  }
+  .bar #teeset {
+    flex: 1;
+    min-width: 0;
+  }
+  .card {
+    top: auto;
+    bottom: calc(max(12px, env(safe-area-inset-bottom)) + 172px);
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+  .card .yards {
+    font-size: 28px;
+  }
+  .card dl,
+  .card ul {
+    display: none;
+  }
+  .badge {
+    margin-top: 6px;
+  }
+  .controls {
+    gap: 6px 12px;
+    padding: 8px;
+  }
+  .buttons button {
+    padding: 6px 9px;
+    font-size: 13px;
+  }
+  .credits {
+    font-size: 10px;
+  }
+}
