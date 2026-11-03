@@ -1,0 +1,68 @@
+name: Course pipeline
+run-name: "${{ inputs.command }} ${{ inputs.courses }}"
+
+# Runs on request only (spec: "The pipeline reruns on request, not on a schedule").
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "survey = every course near Chicago; audit / build = the courses below"
+        type: choice
+        options: [survey, audit, build]
+        default: survey
+      courses:
+        description: "audit / build: OSM ids (way/123, relation/456) or names, separated by ;"
+        type: string
+        default: ""
+      radius_km:
+        description: "survey: radius around the Loop, in km"
+        type: string
+        default: "75"
+
+permissions:
+  contents: read
+
+# One run at a time, to stay polite to the public Overpass and lidar servers.
+concurrency:
+  group: course-pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: pipeline
+    env:
+      COMMAND: ${{ inputs.command }}
+      COURSES: ${{ inputs.courses }}
+      RADIUS_KM: ${{ inputs.radius_km }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/pyproject.toml
+      - run: pip install -e .
+
+      - name: Survey
+        if: inputs.command == 'survey'
+        run: python -m golffly survey --radius-km "$RADIUS_KM" --out ../out/survey
+
+      - name: Audit
+        if: inputs.command == 'audit'
+        run: python -m golffly audit "$COURSES" --out ../out/audit
+
+      - name: Build
+        if: inputs.command == 'build'
+        run: python -m golffly build "$COURSES" --out ../out/courses --scorecards ../courses/scorecards
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ inputs.command }}-${{ github.run_number }}
+          path: out/
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Pipeline caches and outputs
+.cache/
+out/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
